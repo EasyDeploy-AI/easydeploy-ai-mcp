@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easydeploy-ai-mcp"
+version = "0.1.0"
+description = "EasyDeploy AI MCP server — REST API tools for Claude and other MCP clients"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "EasyDeploy AI" }]
+keywords = ["mcp", "easydeploy", "llm", "claude", "automl"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+
+dependencies = [
+  "fastmcp>=3.1.1,<4",
+  "httpx>=0.27,<1",
+  "python-dotenv>=1.1.0",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2,<10",
+  "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+easydeploy-ai-mcp-stdio = "easydeploy_ai_mcp.cli:run_stdio"
+easydeploy-ai-mcp-http = "easydeploy_ai_mcp.cli:run_http"
+
+[project.urls]
+Homepage = "https://easydeploy.ai"
+Documentation = "https://github.com/easydeploy-ai/easydeploy-ai-mcp#readme"
+Repository = "https://github.com/easydeploy-ai/easydeploy-ai-mcp"
+Issues = "https://github.com/easydeploy-ai/easydeploy-ai-mcp/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["src"]
+testpaths = ["tests"]
