@@ -55,10 +55,14 @@ pip install .
 
 | Variable                           | Required | Description                                                                                     |
 | ---------------------------------- | -------- | ----------------------------------------------------------------------------------------------- |
-| `EDA_API_KEY`                      | Yes      | Bearer token from the EasyDeploy dashboard.                                                     |
+| `EDA_API_KEY`                      | stdio    | Bearer token from the EasyDeploy dashboard. Required for stdio mode and the legacy shared-secret HTTP mode. In OAuth mode the per-request JWT is forwarded instead. |
 | `EDA_API_BASE`                     | No       | **Internal/staging only.** Overrides the default production API (`https://api.easydeploy.ai`). Same normalization rules (optional `/v1`). |
 | `EDA_UI_BASE_URL`                  | No       | Prefix for `ui_url` fields (default `https://easydeploy.ai`).                                   |
-| `MCP_SERVICE_TOKEN`                | No       | If set, HTTP mode requires `Authorization: Bearer <token>` for `/mcp` (not for `GET /healthz`). |
+| `MCP_SERVICE_TOKEN`                | No       | Legacy single-tenant gate. If set, HTTP mode requires `Authorization: Bearer <token>` for `/mcp` (not for `GET /healthz`). Mutually exclusive with `EDA_OAUTH_ENABLED`. |
+| `EDA_OAUTH_ENABLED`                | No       | Set to `1` to run the HTTP transport as an OAuth 2.0 resource server. Requires `EDA_COGNITO_USER_POOL_ID` and `EDA_COGNITO_CLIENT_ID`. See [Remote MCP (HTTP)](#remote-mcp-http). |
+| `EDA_COGNITO_USER_POOL_ID`         | OAuth    | Cognito user pool that issues access tokens for the EasyDeploy API.                             |
+| `EDA_COGNITO_CLIENT_ID`            | OAuth    | App client ID expected in the access token's `client_id` claim.                                 |
+| `EDA_COGNITO_REGION`               | No       | AWS region for the user pool (default `us-east-1`).                                             |
 | `EDA_REPORT_MAX_WAIT_SECONDS`      | No       | `get_model_report` poll budget (default `300`).                                                 |
 | `EDA_REPORT_POLL_INTERVAL_SECONDS` | No       | Poll interval in seconds (default `10`).                                                        |
 | `HOST` / `PORT`                    | No       | HTTP bind (defaults `0.0.0.0` / `8080`).                                                        |
@@ -104,6 +108,26 @@ easydeploy-ai-mcp-http
 Or: `uvicorn easydeploy_ai_mcp.http_main:app --host 0.0.0.0 --port 8080`
 
 If you embed `mcp.http_app()` in another ASGI app, pass through **`lifespan`** from the FastMCP HTTP app ([FastMCP ASGI](https://gofastmcp.com/deployment/asgi)); `easydeploy_ai_mcp.http_main` already does this for uvicorn.
+
+### Auth modes
+
+Pick exactly one (setting both `EDA_OAUTH_ENABLED` and `MCP_SERVICE_TOKEN` raises at import):
+
+- **OAuth 2.0 resource server** (multi-tenant): set `EDA_OAUTH_ENABLED=1` plus
+  `EDA_COGNITO_USER_POOL_ID` and `EDA_COGNITO_CLIENT_ID`. Install the optional
+  extra: `pip install easydeploy-ai-mcp[oauth]`. The server validates incoming
+  Cognito **access** JWTs locally against the Cognito JWKS (issuer, signature,
+  `exp`, `token_use=='access'`, `client_id`) and forwards the token to the
+  EasyDeploy API. EasyDeploy API keys (prefix `eda_live_`) are accepted in the
+  same `Authorization: Bearer` header and forwarded as-is — the API is the
+  source of truth for revocation. RFC 9728 metadata is published at
+  `/.well-known/oauth-protected-resource`, and 401 responses include
+  `WWW-Authenticate: Bearer …` so MCP clients can discover the auth server.
+  Note: Cognito access tokens carry `client_id`, **not** `aud`; do not configure
+  an audience.
+- **Shared-secret gate** (legacy single-tenant): set `MCP_SERVICE_TOKEN`. All
+  outbound API calls use the static `EDA_API_KEY`.
+- **No auth**: development only.
 
 **Docker** (from the root of this repository):
 

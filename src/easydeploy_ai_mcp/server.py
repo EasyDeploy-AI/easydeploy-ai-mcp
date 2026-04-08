@@ -56,6 +56,7 @@ from dotenv import load_dotenv
 from fastmcp import FastMCP
 
 from . import api_client
+from .credentials import resolve_bearer_token
 from .defaults import DEFAULT_EDA_API_BASE
 
 load_dotenv()
@@ -72,8 +73,20 @@ mcp = FastMCP("EasyDeploy AI")
 
 def _kw() -> dict:
     """Pass-through keyword args for api_client calls.
-    Includes caller_channel so all MCP-originated requests are tagged in audit logs."""
-    return {"api_key": _API_KEY, "base_url": _BASE_URL, "caller_channel": "MCP_AGENT"}
+
+    The ``api_key`` field is the bearer token to forward as
+    ``Authorization: Bearer <token>``. It can be either a static EasyDeploy
+    API key (``eda_live_*``) or a per-request Cognito access JWT — the API
+    accepts both via the same header. Resolution order is per-request
+    (HTTP/OAuth mode) → module-level ``_API_KEY`` → ``EDA_API_KEY`` env.
+
+    Includes caller_channel so all MCP-originated requests are tagged in
+    audit logs."""
+    return {
+        "api_key": resolve_bearer_token(env_fallback=_API_KEY),
+        "base_url": _BASE_URL,
+        "caller_channel": "MCP_AGENT",
+    }
 
 
 def _extract_tokenized_url(url: str, token_param: str) -> tuple[str, str]:
