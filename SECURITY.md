@@ -35,6 +35,8 @@ Pick exactly one. Setting both `EDA_OAUTH_ENABLED` and `MCP_SERVICE_TOKEN` raise
      revocation and expiry.
    - The verified token is forwarded to the downstream API as
      `Authorization: Bearer <token>`. The API independently re-verifies.
+   - Do **not** rely on `EDA_API_KEY` in the container for OAuth mode: outbound
+     calls use only the per-request bearer (no env fallback).
    - `/.well-known/oauth-protected-resource` (RFC 9728) is published so
      MCP clients can discover the authorization server from a 401.
 

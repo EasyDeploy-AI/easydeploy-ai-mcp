@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 
 import httpx
 from typing import Any
@@ -59,12 +60,24 @@ from . import api_client
 from .credentials import resolve_bearer_token
 from .defaults import DEFAULT_EDA_API_BASE
 
-load_dotenv()
+# Avoid loading repo-root `.env` during pytest — it often enables OAuth/Docker template
+# vars and breaks unit tests that call tools without HTTP request context. Set
+# EDA_FORCE_DOTENV=1 to load `.env` from tests when needed.
+if os.environ.get("EDA_FORCE_DOTENV", "").strip().lower() in {"1", "true", "yes"} or (
+    "pytest" not in sys.modules
+):
+    load_dotenv()
 
 _raw_base = os.environ.get("EDA_API_BASE", "").strip()
 _BASE_URL: str = api_client.normalize_api_base(
     _raw_base if _raw_base else DEFAULT_EDA_API_BASE
 )
+_parsed_api = urlparse(_BASE_URL)
+if _parsed_api.scheme != "https" or not _parsed_api.netloc:
+    raise RuntimeError(
+        f"Invalid EDA_API_BASE after normalization: {_BASE_URL!r}. "
+        "Use an HTTPS URL with a hostname (e.g. https://api.easydeploy.ai or sandbox execute-api …/prod)."
+    )
 _API_KEY: str = os.environ.get("EDA_API_KEY", "")
 _UI_BASE_URL: str = os.environ.get("EDA_UI_BASE_URL", "https://easydeploy.ai").rstrip("/")
 
@@ -77,8 +90,9 @@ def _kw() -> dict:
     The ``api_key`` field is the bearer token to forward as
     ``Authorization: Bearer <token>``. It can be either a static EasyDeploy
     API key (``eda_live_*``) or a per-request Cognito access JWT — the API
-    accepts both via the same header. Resolution order is per-request
-    (HTTP/OAuth mode) → module-level ``_API_KEY`` → ``EDA_API_KEY`` env.
+    accepts both via the same header. With ``EDA_OAUTH_ENABLED=1``, only the
+    per-request token is used (no ``EDA_API_KEY`` fallback). Otherwise:
+    per-request → module ``_API_KEY`` / ``EDA_API_KEY`` env.
 
     Includes caller_channel so all MCP-originated requests are tagged in
     audit logs."""

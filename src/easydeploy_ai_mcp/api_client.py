@@ -109,6 +109,7 @@ async def list_projects(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> list:
     """
     GET /projects — list projects owned by the authenticated API key.
@@ -117,7 +118,7 @@ async def list_projects(
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/projects",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
         resp.raise_for_status()
@@ -129,12 +130,13 @@ async def get_project(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """GET /projects/{projectId} — single project if accessible."""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/projects/{project_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
         resp.raise_for_status()
@@ -146,6 +148,7 @@ async def create_project(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """
     POST /projects — body { name, description? }.
@@ -154,7 +157,7 @@ async def create_project(
     async with _secure_client() as client:
         resp = await client.post(
             f"{base_url}/projects",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             json=body,
             timeout=15.0,
         )
@@ -168,12 +171,13 @@ async def update_project(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """PATCH /projects/{projectId} — body { name?, description? }."""
     async with _secure_client() as client:
         resp = await client.patch(
             f"{base_url}/projects/{project_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             json=body,
             timeout=15.0,
         )
@@ -187,6 +191,7 @@ async def create_dataset(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """
     POST /projects/{projectId}/datasets — creates Dataset + first DatasetVersion (raw).
@@ -195,7 +200,7 @@ async def create_dataset(
     async with _secure_client() as client:
         resp = await client.post(
             f"{base_url}/projects/{project_id}/datasets",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             json=body,
             timeout=120.0,
         )
@@ -209,6 +214,7 @@ async def complete_dataset_upload(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """
     POST /projects/{projectId}/datasets/complete-upload
@@ -217,7 +223,7 @@ async def complete_dataset_upload(
     async with _secure_client() as client:
         resp = await client.post(
             f"{base_url}/projects/{project_id}/datasets/complete-upload",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             json=body,
             timeout=120.0,
         )
@@ -230,12 +236,13 @@ async def list_datasets(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> list:
     """GET /projects/{projectId}/datasets"""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/projects/{project_id}/datasets",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=30.0,
         )
         resp.raise_for_status()
@@ -248,12 +255,13 @@ async def get_dataset(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """GET /projects/{projectId}/datasets/{datasetId}"""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/projects/{project_id}/datasets/{dataset_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
         resp.raise_for_status()
@@ -267,12 +275,13 @@ async def update_dataset(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """PATCH /projects/{projectId}/datasets/{datasetId} — body { name?, description? }."""
     async with _secure_client() as client:
         resp = await client.patch(
             f"{base_url}/projects/{project_id}/datasets/{dataset_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             json=body,
             timeout=15.0,
         )
@@ -314,6 +323,7 @@ async def list_dataset_versions(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> list:
     """GET dataset versions. Uses flat ``/datasets/{datasetId}/versions`` when project_id is empty."""
     path = (
@@ -324,7 +334,7 @@ async def list_dataset_versions(
     async with _secure_client() as client:
         resp = await client.get(
             path,
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=30.0,
         )
         resp.raise_for_status()
@@ -338,12 +348,13 @@ async def get_dataset_version(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """GET /projects/{projectId}/datasets/{datasetId}/versions/{versionId}"""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/projects/{project_id}/datasets/{dataset_id}/versions/{version_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
         resp.raise_for_status()
@@ -383,6 +394,7 @@ async def get_presigned_upload_url(
     api_key: str,
     base_url: str,
     dataset_id: str | None = None,
+    caller_channel: str = "",
 ) -> dict:
     """
     POST /uploads/url — returns gatewayUploadUrl + uploadRequestId for API Gateway upload.
@@ -395,7 +407,7 @@ async def get_presigned_upload_url(
     async with _secure_client() as client:
         resp = await client.post(
             f"{base_url}/uploads/url",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             json=payload,
             timeout=15.0,
         )
@@ -452,6 +464,7 @@ async def get_training_status(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """GET /training-jobs/{jobId}
 
@@ -464,7 +477,7 @@ async def get_training_status(
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/training-jobs/{job_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=10.0,
         )
         resp.raise_for_status()
@@ -502,12 +515,13 @@ async def get_prediction(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """GET /predictions/{predictionId}"""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/predictions/{prediction_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
         resp.raise_for_status()
@@ -519,12 +533,13 @@ async def get_prediction_download(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """GET /predictions/{predictionId}/download"""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/predictions/{prediction_id}/download",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=20.0,
         )
         resp.raise_for_status()
@@ -536,13 +551,14 @@ async def list_predictions(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> list[dict]:
     """GET /predictions?projectId=... (project_id optional)."""
     params = {"projectId": project_id} if project_id.strip() else None
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/predictions",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             params=params,
             timeout=15.0,
         )
@@ -558,12 +574,13 @@ async def list_models(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> list:
     """GET /projects/{projectId}/models"""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/projects/{project_id}/models",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=10.0,
         )
         resp.raise_for_status()
@@ -576,12 +593,13 @@ async def list_model_versions(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> list:
     """GET /projects/{projectId}/models/{modelId}/versions"""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/projects/{project_id}/models/{model_id}/versions",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
         resp.raise_for_status()
@@ -594,12 +612,13 @@ async def get_model(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """GET /projects/{projectId}/models/{modelId}"""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/projects/{project_id}/models/{model_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
         resp.raise_for_status()
@@ -611,12 +630,13 @@ async def get_model_by_id(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """GET /models/{modelId} — same payload as nested GET; project resolved server-side."""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/models/{model_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
         resp.raise_for_status()
@@ -630,12 +650,13 @@ async def update_model(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """PATCH /projects/{projectId}/models/{modelId} — body { name?, description? }."""
     async with _secure_client() as client:
         resp = await client.patch(
             f"{base_url}/projects/{project_id}/models/{model_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             json=body,
             timeout=15.0,
         )
@@ -650,12 +671,13 @@ async def get_model_version(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """GET /projects/{projectId}/models/{modelId}/versions/{versionId}"""
     async with _secure_client() as client:
         resp = await client.get(
             f"{base_url}/projects/{project_id}/models/{model_id}/versions/{version_id}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
         resp.raise_for_status()
@@ -668,12 +690,13 @@ async def create_model(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """POST /projects/{projectId}/models — body { name, description? }."""
     async with _secure_client() as client:
         resp = await client.post(
             f"{base_url}/projects/{project_id}/models",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             json=body,
             timeout=15.0,
         )
@@ -688,6 +711,7 @@ async def create_model_version(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
 ) -> dict:
     """
     POST /projects/{projectId}/models/{modelId}/versions
@@ -696,7 +720,7 @@ async def create_model_version(
     async with _secure_client() as client:
         resp = await client.post(
             f"{base_url}/projects/{project_id}/models/{model_id}/versions",
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             json=body,
             timeout=30.0,
         )
@@ -711,6 +735,7 @@ async def get_model_report(
     *,
     api_key: str,
     base_url: str,
+    caller_channel: str = "",
     report_scope: str = "summary",
 ) -> dict:
     """GET EDA report JSON from S3 (summary or full scope).
@@ -741,7 +766,7 @@ async def get_model_report(
     async with _secure_client() as client:
         resp = await client.get(
             path,
-            headers=_headers(api_key),
+            headers=_headers(api_key, caller_channel),
             params=params,
             timeout=60.0,
         )

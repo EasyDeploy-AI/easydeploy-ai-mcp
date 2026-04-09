@@ -55,8 +55,8 @@ pip install .
 
 | Variable                           | Required | Description                                                                                     |
 | ---------------------------------- | -------- | ----------------------------------------------------------------------------------------------- |
-| `EDA_API_KEY`                      | stdio    | Bearer token from the EasyDeploy dashboard. Required for stdio mode and the legacy shared-secret HTTP mode. In OAuth mode the per-request JWT is forwarded instead. |
-| `EDA_API_BASE`                     | No       | **Internal/staging only.** Overrides the default production API (`https://api.easydeploy.ai`). Same normalization rules (optional `/v1`). |
+| `EDA_API_KEY`                      | stdio / legacy HTTP | Required for **stdio** and **legacy** HTTP (no OAuth). **Not** used for outbound API calls when `EDA_OAUTH_ENABLED=1` — each MCP request must include `Authorization: Bearer <JWT or eda_live_…>`. |
+| `EDA_API_BASE`                     | No       | Overrides the default production API (`https://api.easydeploy.ai`). **Required in practice** for sandbox execute-api or when the container cannot resolve the default host. Same normalization rules (optional `/v1`). |
 | `EDA_UI_BASE_URL`                  | No       | Prefix for `ui_url` fields (default `https://easydeploy.ai`).                                   |
 | `MCP_SERVICE_TOKEN`                | No       | Legacy single-tenant gate. If set, HTTP mode requires `Authorization: Bearer <token>` for `/mcp` (not for `GET /healthz`). Mutually exclusive with `EDA_OAUTH_ENABLED`. |
 | `EDA_OAUTH_ENABLED`                | No       | Set to `1` to run the HTTP transport as an OAuth 2.0 resource server. Requires `EDA_COGNITO_USER_POOL_ID` and `EDA_COGNITO_CLIENT_ID`. See [Remote MCP (HTTP)](#remote-mcp-http). |
@@ -66,6 +66,8 @@ pip install .
 | `EDA_REPORT_MAX_WAIT_SECONDS`      | No       | `get_model_report` poll budget (default `300`).                                                 |
 | `EDA_REPORT_POLL_INTERVAL_SECONDS` | No       | Poll interval in seconds (default `10`).                                                        |
 | `HOST` / `PORT`                    | No       | HTTP bind (defaults `0.0.0.0` / `8080`).                                                        |
+| `EDA_TRUST_FORWARDED_HEADERS`      | No       | Set to `1` behind ALB/reverse proxy so RFC 9728 `resource` uses `https` (trusts `X-Forwarded-Proto`). |
+| `EDA_MCP_OAUTH_ISSUER`             | No       | Public MCP base URL (no path) for `authorization_servers` and proxy `/.well-known/oauth-authorization-server` **`issuer`**. Default: request origin. Use if `Host` / `X-Forwarded-Proto` are wrong behind a proxy. |
 
 
 Copy [.env.example](.env.example) as a template (example values only; never commit real keys).
@@ -114,22 +116,49 @@ If you embed `mcp.http_app()` in another ASGI app, pass through **`lifespan`** f
 Pick exactly one (setting both `EDA_OAUTH_ENABLED` and `MCP_SERVICE_TOKEN` raises at import):
 
 - **OAuth 2.0 resource server** (multi-tenant): set `EDA_OAUTH_ENABLED=1` plus
-  `EDA_COGNITO_USER_POOL_ID` and `EDA_COGNITO_CLIENT_ID`. Install the optional
+  `EDA_COGNITO_USER_POOL_ID` and `EDA_COGNITO_CLIENT_ID`. Set **`EDA_COGNITO_CLIENT_ID`**
+  to the **MCP OAuth** Cognito app client id (EasyDeploy Amplify deploy emits the
+  CloudFormation output **`McpClaudeOauthUserPoolClientId`**) — not the web SPA
+  client id. Operators: see **docs/operations/cognito-mcp-claude-oauth.md** in the
+  EasyDeploy backend (accessible-ai) repository. Install the optional
   extra: `pip install easydeploy-ai-mcp[oauth]`. The server validates incoming
   Cognito **access** JWTs locally against the Cognito JWKS (issuer, signature,
   `exp`, `token_use=='access'`, `client_id`) and forwards the token to the
   EasyDeploy API. EasyDeploy API keys (prefix `eda_live_`) are accepted in the
   same `Authorization: Bearer` header and forwarded as-is — the API is the
   source of truth for revocation. RFC 9728 metadata is published at
-  `/.well-known/oauth-protected-resource`, and 401 responses include
-  `WWW-Authenticate: Bearer …` so MCP clients can discover the auth server.
+  `/.well-known/oauth-protected-resource`; RFC 8414 proxy metadata includes
+  **`registration_endpoint`**, and **`POST /oauth/register`** returns the static
+  Cognito MCP **`EDA_COGNITO_CLIENT_ID`** (RFC 7591-style, public client). 401
+  responses include `WWW-Authenticate: Bearer …` so MCP clients can discover the
+  auth server.
   Note: Cognito access tokens carry `client_id`, **not** `aud`; do not configure
   an audience.
 - **Shared-secret gate** (legacy single-tenant): set `MCP_SERVICE_TOKEN`. All
   outbound API calls use the static `EDA_API_KEY`.
 - **No auth**: development only.
 
-**Docker** (from the root of this repository):
+**Docker — run locally** (same image you deploy to ECS/Fargate; includes `easydeploy-ai-mcp[oauth]`):
+
+```bash
+# Convenience: build + run; uses .env if present, else pass -e flags
+./scripts/run_mcp_docker_local.sh
+
+# Example: legacy API-key mode with explicit env (no .env)
+./scripts/run_mcp_docker_local.sh \
+  -e EDA_API_KEY="eda_live_..." \
+  -e EDA_API_BASE="https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod"
+
+# OAuth mode: put EDA_OAUTH_ENABLED, EDA_COGNITO_*, EDA_API_BASE in .env (omit EDA_API_KEY), then:
+./scripts/run_mcp_docker_local.sh
+
+# Different host port
+PORT=9000 ./scripts/run_mcp_docker_local.sh
+```
+
+**Host on AWS (Fargate + ALB):** build and push this repo’s **Dockerfile** to **ECR**, then deploy stack **`EasyDeployMcpHost`** from the internal **`accessible-ai-cdk`** repository (see its **README** / **DEVELOPMENT.md**). Task env matches **`.env.example`**; pass **`-c certificateArn=…`** for HTTPS (Claude). See **[docs/mcp-host-preflight.md](docs/mcp-host-preflight.md)** and **[docs/claude-remote-connector.md](docs/claude-remote-connector.md)**.
+
+Manual equivalent:
 
 ```bash
 docker build -t easydeploy-ai-mcp .
@@ -144,6 +173,9 @@ docker run --rm -p 8080:8080 \
 - **[docs/claude-getting-started.md](docs/claude-getting-started.md)** — EasyDeploy + Claude: Connectors or local Desktop config JSON
 - **[docs/claude.md](docs/claude.md)** — Claude Connectors vs Claude Code, transports, headers
 - **[docs/aws-p0.md](docs/aws-p0.md)** — lean AWS deployment and security checklist
+- **accessible-ai-cdk** (`EasyDeployMcpHost` stack) — internal CDK: VPC + Fargate + ALB, ECR image (documented in that repo’s **DEVELOPMENT.md**)
+- **[docs/mcp-host-preflight.md](docs/mcp-host-preflight.md)** — confirm stack env vs `.env.example` before deploy
+- **[docs/claude-remote-connector.md](docs/claude-remote-connector.md)** — DNS, HTTPS metadata, Claude connector URL
 
 ## REST API reference
 
@@ -159,6 +191,12 @@ This MCP server is a thin client over the **EasyDeploy public REST API**. Endpoi
 pip install -e ".[dev]"
 pytest
 ```
+
+**Optional — HTTP MCP smoke (Node 18+):** with `easydeploy-ai-mcp-http` or Docker listening, run `node scripts/smoke-mcp-http.mjs` (same env vars as `scripts/validate_mcp_sandbox.sh`; adds `tools/call` for `get_account_status`). For **full train + ad-hoc prediction** via MCP tools, run `node scripts/smoke-mcp-train-predict.mjs --file <csv>` (see [docs/sandbox-mcp-validation.md](docs/sandbox-mcp-validation.md)).
+
+**Optional — real Cognito JWT against the HTTP app** (live JWKS, no mocks): set `EDA_INTEGRATION_COGNITO_ACCESS_TOKEN` plus the same `EDA_COGNITO_*` vars you use for OAuth mode, then run `pytest tests/test_cognito_jwt_integration.py -v`. See the docstring in that file. Get a token with the PKCE helper in the accessible-ai repo (`scripts/cognito_mcp_get_access_token.py`).
+
+**Shipping remote MCP / Claude:** follow the phased checklist in [docs/e2e-mcp-pre-claude-validation-plan.md](docs/e2e-mcp-pre-claude-validation-plan.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and reporting issues.
 

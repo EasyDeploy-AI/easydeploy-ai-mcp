@@ -4,6 +4,8 @@ This guide is for **EasyDeploy AI customers** who want to use **Claude** with th
 
 **Hosting the MCP server on AWS or Docker** (for a shared remote URL) is covered in the [README](../README.md) and [aws-p0.md](aws-p0.md), not here.
 
+**Operators (pre-production):** Before you give users a remote MCP URL or test in Claude, run the phased checklist in [e2e-mcp-pre-claude-validation-plan.md](e2e-mcp-pre-claude-validation-plan.md) (REST API → local MCP → Docker → public HTTPS → Claude).
+
 ---
 
 ## Before you start
@@ -24,8 +26,8 @@ Screenshots for Option A will be added here later.
   - **Name:** Any label you like (e.g. `EasyDeploy`).
   - **Remote MCP Server URL:** Paste the MCP URL you were given (must be `https://…` and include the `/mcp` path if that is how it was provided).
 3. Expand **^ Advanced Settings**:
-  - **OAuth Client ID (optional)** — Leave empty unless your administrator told you to set it.
-  - **OAuth Client Secret (optional)** — Same as above.
+  - **OAuth Client ID (optional)** — If your team uses **Cognito OAuth** on the MCP server, your administrator may give you the **MCP app client id** (EasyDeploy backend CloudFormation output `McpClaudeOauthUserPoolClientId`). Paste it here when instructed; otherwise leave empty.
+  - **OAuth Client Secret (optional)** — Only if your administrator issued a **confidential** client; the standard EasyDeploy MCP Cognito client is **public** (PKCE) and has no secret.
 4. Save the connector, then use Claude as usual. You should see EasyDeploy-related tools when the connection succeeds.
 
 If your setup uses a **bearer token** for the MCP server, your administrator will tell you where to enter it in Claude (wording in the app can change between versions).

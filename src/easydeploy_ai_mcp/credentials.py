@@ -5,21 +5,23 @@ There are two transport surfaces:
 
 * **stdio (local)** — the user's machine sets ``EDA_API_KEY`` in env. The MCP
   server is single-tenant and uses that key for every outbound call.
-* **HTTP (remote)** — when ``EDA_OAUTH_ENABLED=1``, the MCP server is a
-  multi-tenant OAuth resource server. Each request carries its own
-  ``Authorization: Bearer <jwt|api_key>``. The HTTP middleware validates and
-  stores the raw token on ``request.state.bearer_token``; this resolver
-  surfaces it to tools via FastMCP's request-context dependency.
 
-The fallback chain is intentionally simple: per-request token first, then
-env. Tools never branch on transport — they just call ``resolve_bearer_token``.
+* **HTTP + OAuth** (``EDA_OAUTH_ENABLED=1``) — each MCP request must carry
+  ``Authorization: Bearer <jwt|eda_live_…>``. Middleware stashes it on
+  ``request.state.bearer_token``. There is **no** fallback to ``EDA_API_KEY``
+  for outbound calls (multi-tenant safety).
+
+* **HTTP without OAuth** — same resolver can use per-request bearer if present,
+  else ``EDA_API_KEY`` / ``env_fallback`` (legacy or open dev).
+
+Tools call ``resolve_bearer_token`` and do not branch on transport.
 """
 
 from __future__ import annotations
 
 import os
 
-from .auth import AuthError
+from .auth import AuthError, is_oauth_enabled
 
 
 _REQUEST_STATE_KEY = "bearer_token"
@@ -28,19 +30,28 @@ _REQUEST_STATE_KEY = "bearer_token"
 def resolve_bearer_token(env_fallback: str = "") -> str:
     """Return the bearer token to use for the current outbound API call.
 
-    Resolution order:
-        1. ``request.state.bearer_token`` (set by ``OAuthResourceServerMiddleware``)
-        2. ``env_fallback`` (typically the module-level ``_API_KEY``)
+    Resolution order when **OAuth is enabled** (``EDA_OAUTH_ENABLED=1``):
+
+        1. ``request.state.bearer_token`` only (JWT or ``eda_live_*`` from the
+           incoming MCP request). **No** ``EDA_API_KEY`` or ``env_fallback``.
+
+    Resolution order when OAuth is **disabled**:
+
+        1. ``request.state.bearer_token`` if present (e.g. ungated HTTP dev)
+        2. ``env_fallback`` (module-level ``_API_KEY`` from ``EDA_API_KEY`` at import)
         3. ``EDA_API_KEY`` env var
 
-    Raises ``AuthError`` if no credential is available. The HTTP path returns
-    401 in that case; the stdio path surfaces it as a tool error so the user
-    sees a clear "set EDA_API_KEY" message instead of an opaque 401 from the
-    API later.
+    Raises ``AuthError`` if no credential is available.
     """
     token = _token_from_request_context()
     if token:
         return token
+    if is_oauth_enabled():
+        raise AuthError(
+            "OAuth mode does not use EDA_API_KEY for outbound calls. "
+            "Send Authorization: Bearer <Cognito access token or eda_live_…> on the MCP request.",
+            status_code=401,
+        )
     if env_fallback:
         return env_fallback
     env_token = os.environ.get("EDA_API_KEY", "").strip()

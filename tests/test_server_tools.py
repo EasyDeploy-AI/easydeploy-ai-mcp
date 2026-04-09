@@ -73,6 +73,7 @@ async def test_eda_mcp_list_projects_delegates_to_api_client(eda_mcp_server):
     _kwargs = mock_fn.call_args[1]
     assert _kwargs["base_url"] == BASE
     assert _kwargs["api_key"] == API_KEY
+    assert _kwargs["caller_channel"] == "MCP_AGENT"
 
 
 @pytest.mark.asyncio

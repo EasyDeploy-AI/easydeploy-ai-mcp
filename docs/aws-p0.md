@@ -35,12 +35,12 @@ Confirm the exact path and transport with your pinned **FastMCP** version and [A
 | Area | Recommendation |
 |------|----------------|
 | TLS | Internet-facing **Application Load Balancer** with **ACM** certificate; redirect HTTP → HTTPS. |
-| Secrets | Inject **`EDA_API_KEY`** (required) and optional **`MCP_SERVICE_TOKEN`** from **Secrets Manager** (or SSM SecureString). Add **`EDA_API_BASE`** only if you point at a non-production API (internal/staging). Never bake secrets into the image. |
+| Secrets | **Legacy HTTP:** inject **`EDA_API_KEY`** and optional **`MCP_SERVICE_TOKEN`** from **Secrets Manager**. **OAuth mode:** inject **`EDA_COGNITO_*`** only (omit **`EDA_API_KEY`** for outbound calls — each user sends bearer on MCP requests); omit **`MCP_SERVICE_TOKEN`**. Cognito client id from **`McpClaudeOauthUserPoolClientId`**. Add **`EDA_API_BASE`** only for non-production API. Never bake secrets into the image. |
 | Network | Run tasks in **private subnets** without public IPs. Security group: allow inbound **only** from the ALB security group on the container port (e.g. 8080). |
 | Observability | **CloudWatch Logs** driver for the task; structured logs; **do not** log API keys or full sensitive payloads. |
 | Upstream | Default API host is production EasyDeploy; if you set `EDA_API_BASE`, it must be **https://** (enforced in `api_client`). |
 | WAF vs clients | **WAF IP allowlist** for [Anthropic egress IPs](https://support.claude.com/en/articles/11503834-building-custom-connectors-via-remote-mcp-servers) reduces anonymous scanning if **all** production traffic is Claude **Connectors** (requests originate from Anthropic). That pattern **breaks** clients calling your URL **directly** from arbitrary IPs (e.g. some **Claude Code** setups). Choose **Connector-only + allowlist** **or** **broader access + `MCP_SERVICE_TOKEN`** (see README). |
-| MCP auth | If not using IP restriction, set **`MCP_SERVICE_TOKEN`** and require `Authorization: Bearer …` on `/mcp`. `GET /healthz` stays unauthenticated for ALB health checks. |
+| MCP auth | **OAuth:** `EDA_OAUTH_ENABLED=1` + Cognito env (see README); no **`MCP_SERVICE_TOKEN`**. **Legacy:** set **`MCP_SERVICE_TOKEN`** for a shared-secret gate on `/mcp`. `GET /healthz` stays unauthenticated for ALB health checks. |
 
 ## AWS components (minimal)
 
@@ -61,7 +61,9 @@ Push to ECR and reference the digest in the task definition.
 
 ## Infrastructure as code
 
-If your organization uses a shared **infrastructure-as-code** repository (CDK, Terraform, Pulumi, etc.), you can add an ALB+Fargate (or equivalent) stack there for this service. **P0:** provision resources via the AWS Console, CLI, or a **small standalone** IaC project in **this** repo or your account until a shared module exists. **Follow-up:** promote a reusable stack into your org’s standard IaC library once the container image and ports are stable.
+**EasyDeploy internal CDK:** the **`accessible-ai-cdk`** repository defines stack **`EasyDeployMcpHost`** (**VPC + Fargate + ALB**), pulling the image from **ECR** after you build/push the [Dockerfile](../Dockerfile) from this repo. Task env matches the **sandbox-tested** OAuth/API settings (override with `-c`); use `-c certificateArn=…` for HTTPS (Claude). See that repo’s **DEVELOPMENT.md**.
+
+If your organization uses a different **infrastructure-as-code** repository (Terraform, Pulumi, etc.), replicate the same pattern: ECR image + ALB + Fargate + env from **`.env.example`**. **Follow-up:** promote a reusable module into your org’s standard IaC library once the container image and ports are stable.
 
 ## Compliance (SOC 2)
 
