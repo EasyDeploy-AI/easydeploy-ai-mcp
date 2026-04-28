@@ -25,10 +25,10 @@ The script **`docker build`s** [`Dockerfile`](../Dockerfile) as **`easydeploy-ai
 ```bash
 docker build -t eda-mcp-local .
 docker run --rm -p 8080:8080 \
-  -e EDA_API_BASE="https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod" \
+  -e EDA_API_BASE="https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod" \
   -e EDA_OAUTH_ENABLED=1 \
-  -e EDA_COGNITO_USER_POOL_ID="us-east-1_WLnwphMyA" \
-  -e EDA_COGNITO_CLIENT_ID="33i7qdh13hi3aafjv2qibljt31" \
+  -e EDA_COGNITO_USER_POOL_ID="us-east-1_XXXXXXXXX" \
+  -e EDA_COGNITO_CLIENT_ID="your-cognito-client-id" \
   -e EDA_COGNITO_REGION="us-east-1" \
   eda-mcp-local
 ```
@@ -66,12 +66,12 @@ Keep the env **activated** in the same terminal while you run `easydeploy-ai-mcp
 Outbound REST calls use [`normalize_api_base`](../src/easydeploy_ai_mcp/api_client.py): the value is normalized to `…/v1`.
 
 ```bash
-export EDA_API_BASE="https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod"
+export EDA_API_BASE="https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod"
 ```
 
 Effective upstream prefix:
 
-`https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod/v1/…`
+`https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod/v1/…`
 
 ## OAuth mode (multi-tenant HTTP)
 
@@ -80,8 +80,8 @@ From the **same** Amplify sandbox stack that owns this API (CloudFormation **Out
 | Variable | Value (EasyDeploy sandbox example) |
 |----------|--------|
 | `EDA_OAUTH_ENABLED` | `1` |
-| `EDA_COGNITO_USER_POOL_ID` | `us-east-1_WLnwphMyA` (confirm in stack outputs) |
-| `EDA_COGNITO_CLIENT_ID` | `33i7qdh13hi3aafjv2qibljt31` (`McpClaudeOauthUserPoolClientId`) |
+| `EDA_COGNITO_USER_POOL_ID` | `us-east-1_XXXXXXXXX` (confirm in stack outputs) |
+| `EDA_COGNITO_CLIENT_ID` | `your-cognito-client-id` (`McpClaudeOauthUserPoolClientId`) |
 | `EDA_COGNITO_REGION` | `us-east-1` |
 
 Do **not** set `MCP_SERVICE_TOKEN` with OAuth enabled.
@@ -115,7 +115,7 @@ With the MCP server already listening (**Docker** or **venv** + `easydeploy-ai-m
 
 ```bash
 export MCP_SMOKE_BASE_URL="http://127.0.0.1:8080"
-export EDA_API_BASE="https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod"
+export EDA_API_BASE="https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod"
 # Optional — direct API check (step 4)
 export EDA_SMOKE_API_KEY="eda_live_…"
 # Or use the same variable as the MCP server:
@@ -134,7 +134,7 @@ export EDA_SMOKE_API_KEY="eda_live_…"
 
 ### Full MCP smoke (Node, `tools/call`)
 
-[`scripts/smoke-mcp-http.mjs`](../scripts/smoke-mcp-http.mjs) mirrors the bash checks and adds **`tools/call`** (default `get_account_status`) so the server must call the EasyDeploy REST API with the same bearer. Styled like **accessible-ai** `scripts/smoke-public-api.mjs` (step labels, colors). **Requires Node 18+.**
+[`scripts/smoke-mcp-http.mjs`](../scripts/smoke-mcp-http.mjs) mirrors the bash checks and adds **`tools/call`** (default `get_account_status`) so the server must call the EasyDeploy REST API with the same bearer. **Requires Node 18+.**
 
 ```bash
 # Same env as validate_mcp_sandbox.sh; OAuth on MCP → set a JWT or API key bearer
@@ -148,7 +148,7 @@ node scripts/smoke-mcp-http.mjs --tool list_projects --tool-args "{}"
 
 ### Full train + predict (HTTP MCP)
 
-[`scripts/smoke-mcp-train-predict.mjs`](../scripts/smoke-mcp-train-predict.mjs) runs the same **upload → dataset → model version → training → ad-hoc prediction** path as **accessible-ai** [`scripts/smoke-public-api.mjs`](https://github.com/easydeploy-ai/accessible-ai/blob/main/scripts/smoke-public-api.mjs), but each step is **`tools/call`** on `/mcp` plus a **gateway `PUT`** for the CSV (same as `start_upload`’s `curl_command`).
+[`scripts/smoke-mcp-train-predict.mjs`](../scripts/smoke-mcp-train-predict.mjs) runs the full **upload → dataset → model version → training → ad-hoc prediction** path, but each step is **`tools/call`** on `/mcp` plus a **gateway `PUT`** for the CSV (same as `start_upload`’s `curl_command`).
 
 ```bash
 export MCP_SMOKE_BASE_URL=http://127.0.0.1:8080
@@ -181,4 +181,4 @@ Shared helpers live in [`scripts/mcp-streamable-client.mjs`](../scripts/mcp-stre
 | **Custom domain** shows **Login pages unavailable** | Cognito Hosted UI / custom domain not fully configured for that pool (check Cognito console → App integration → Domain). Prefer the default **`*.auth.<region>.amazoncognito.com`** host for local PKCE until the custom domain works. |
 | Browser opened **`/oauth2/authorize`** but your product only documents **`/login`** | Cognito’s OAuth entry is normally **`/oauth2/authorize`**. If your routing requires another path, try `--authorize-path login` (only if your IdP documents it). |
 
-See also [aws-p0.md](aws-p0.md) and the accessible-ai runbook [cognito-mcp-claude-oauth.md](https://github.com/easydeploy-ai/accessible-ai/blob/main/docs/operations/cognito-mcp-claude-oauth.md) (or your monorepo path).
+See also [aws-p0.md](aws-p0.md) for deployment and compliance guidance.

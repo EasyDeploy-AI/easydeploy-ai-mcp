@@ -1,6 +1,6 @@
 # Connect Claude to the hosted MCP (OAuth)
 
-After the load balancer serves **`https://<your-domain>/mcp`** with a valid ACM certificate and the ECS task runs with the **tested sandbox env** (see [`.env.example`](../.env.example); deploy via **accessible-ai-cdk** **`EasyDeployMcpHost`** — **DEVELOPMENT.md** in that repo):
+After the load balancer serves **`https://<your-domain>/mcp`** with a valid ACM certificate and the ECS task runs with the **tested sandbox env** (see [`.env.example`](../.env.example); deploy via your CDK **`EasyDeployMcpHost`** stack — see [aws-p0.md](aws-p0.md)):
 
 ## 1. DNS
 
@@ -23,7 +23,7 @@ curl -sS "https://<your-domain>/.well-known/oauth-protected-resource" | jq .
 2. Complete **browser OAuth**. You should hit **Cognito Hosted UI** and sign in with a user allowed to use the sandbox API.
 3. Confirm the **access** token (not ID token): `token_use` = `access`, `client_id` = your **`McpClaudeOauthUserPoolClientId`**, `iss` = Cognito issuer.
 
-If Cognito returns **`redirect_mismatch`**, the client’s `redirect_uri` is not allowlisted — add it in Amplify [`backend.ts`](https://github.com/easydeploy-ai/accessible-ai/blob/main/amplify/backend.ts) MCP app client `callbackUrls`, then redeploy. See [cognito-mcp-claude-oauth.md](https://github.com/easydeploy-ai/accessible-ai/blob/main/docs/operations/cognito-mcp-claude-oauth.md).
+If Cognito returns **`redirect_mismatch`**, the client’s `redirect_uri` is not allowlisted — add it in your Amplify backend’s MCP app client `callbackUrls`, then redeploy.
 
 ## 4. Smoke from your laptop
 

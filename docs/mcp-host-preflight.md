@@ -6,16 +6,16 @@ Run this **before** deploying the HTTP MCP to AWS or connecting Claude, so the *
 
 | Item | `.env.example` (sandbox reference) | Where to verify |
 |------|-----------------------------------|-----------------|
-| `EDA_API_BASE` | `https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod` | API Gateway stage URL for your sandbox; must not 404 on `/v1/account` (unauthenticated → 401). |
-| `EDA_COGNITO_USER_POOL_ID` | `us-east-1_WLnwphMyA` | CloudFormation / Cognito console. |
-| `EDA_COGNITO_CLIENT_ID` | `33i7qdh13hi3aafjv2qibljt31` | Output **`McpClaudeOauthUserPoolClientId`** — app client **`easydeploy-mcp-claude-oauth`**, **not** the web SPA client. |
+| `EDA_API_BASE` | `https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod` | API Gateway stage URL for your sandbox; must not 404 on `/v1/account` (unauthenticated → 401). |
+| `EDA_COGNITO_USER_POOL_ID` | `us-east-1_XXXXXXXXX` | CloudFormation / Cognito console. |
+| `EDA_COGNITO_CLIENT_ID` | `your-cognito-client-id` | Output **`McpClaudeOauthUserPoolClientId`** — app client **`easydeploy-mcp-claude-oauth`**, **not** the web SPA client. |
 | `EDA_COGNITO_REGION` | `us-east-1` | Pool region. |
 
 If the sandbox was **redeployed**, ids or the execute-api URL may have changed — update ECS task env (or CDK context) to match.
 
 ## 2. API authorizer accepts MCP client JWTs
 
-The public API **Lambda authorizer** and `/api-keys` routes must accept access tokens issued to **`USER_POOL_MCP_CLIENT_ID`** as well as the web client. That wiring lives in the Amplify backend (e.g. [`amplify/backend.ts`](https://github.com/easydeploy-ai/accessible-ai/blob/main/amplify/backend.ts) in **accessible-ai**). If MCP tokens get **403** on `/v1/*` while `/mcp` works, redeploy backend with the MCP client id in the verifier allowlist.
+The public API **Lambda authorizer** and `/api-keys` routes must accept access tokens issued to **`USER_POOL_MCP_CLIENT_ID`** as well as the web client. That wiring lives in your Amplify backend (e.g. `amplify/backend.ts`). If MCP tokens get **403** on `/v1/*` while `/mcp` works, redeploy backend with the MCP client id in the verifier allowlist.
 
 ## 3. Automated curl checks
 
@@ -29,10 +29,10 @@ Override:
 
 ```bash
 export EDA_API_BASE='https://your-execute-api.../prod'
-export EXPECTED_ISSUER='https://cognito-idp.us-east-1.amazonaws.com/us-east-1_WLnwphMyA'
+export EXPECTED_ISSUER='https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX'
 ./scripts/verify_mcp_host_preflight.sh
 ```
 
 ## 4. Hosted UI domain
 
-For PKCE token acquisition and Claude OAuth, note the Cognito **Hosted UI** domain (see [cognito-mcp-claude-oauth.md](https://github.com/easydeploy-ai/accessible-ai/blob/main/docs/operations/cognito-mcp-claude-oauth.md) in **accessible-ai**).
+For PKCE token acquisition and Claude OAuth, note the Cognito **Hosted UI** domain (check your Cognito console under **App integration > Domain**).

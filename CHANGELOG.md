@@ -15,16 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **AWS hosting:** CDK stack **`EasyDeployMcpHost`** moved to internal **`accessible-ai-cdk`** (VPC + Fargate + ALB, **ECR** image, health **`/healthz`**, sandbox-tested task env; `-c certificateArn=…` for HTTPS). Build/push the **Dockerfile** from this repo to ECR, then deploy that stack (see **accessible-ai-cdk** **DEVELOPMENT.md**). This repo: **`docs/mcp-host-preflight.md`**, **`docs/claude-remote-connector.md`**, **`scripts/verify_mcp_host_preflight.sh`**, **`scripts/push_mcp_image_ecr.sh`**, **`scripts/smoke_mcp_remote.sh`**, **`.dockerignore`**. Removed **`infra/cdk`** from the OSS package.
+- **AWS hosting:** CDK stack **`EasyDeployMcpHost`** (VPC + Fargate + ALB, **ECR** image, health **`/healthz`**, sandbox-tested task env; `-c certificateArn=…` for HTTPS). Build/push the **Dockerfile** from this repo to ECR, then deploy the CDK stack (see [docs/aws-p0.md](docs/aws-p0.md)). This repo: **`docs/mcp-host-preflight.md`**, **`docs/claude-remote-connector.md`**, **`scripts/verify_mcp_host_preflight.sh`**, **`scripts/push_mcp_image_ecr.sh`**, **`scripts/smoke_mcp_remote.sh`**, **`.dockerignore`**. Removed **`infra/cdk`** from the OSS package.
 - **HTTP:** set **`EDA_TRUST_FORWARDED_HEADERS=1`** so uvicorn trusts **`X-Forwarded-Proto`** behind ALB (correct RFC 9728 **`resource`** URL). Documented in **`.env.example`**.
 
 - **Server:** skip **`load_dotenv()`** while **`pytest`** is imported so a repo-root `.env` does not flip OAuth on during unit tests; set **`EDA_FORCE_DOTENV=1`** to opt in.
 
 - **Server:** validate **`EDA_API_BASE`** after normalization (HTTPS + hostname) at import to fail fast on malformed env.
 
-- **`scripts/smoke-mcp-train-predict.mjs`** + **`scripts/mcp-streamable-client.mjs`** — Node **18+** end-to-end smoke: project, `start_upload` + gateway PUT, `complete_upload`, model version, `submit_training_job`, poll `get_model_version`, `run_prediction`, `list_predictions` (aligned with accessible-ai `smoke-public-api.mjs`).
+- **`scripts/smoke-mcp-train-predict.mjs`** + **`scripts/mcp-streamable-client.mjs`** — Node **18+** end-to-end smoke: project, `start_upload` + gateway PUT, `complete_upload`, model version, `submit_training_job`, poll `get_model_version`, `run_prediction`, `list_predictions`.
 
-- **`scripts/smoke-mcp-http.mjs`** — Node **18+** smoke test (same style as accessible-ai `smoke-public-api.mjs`): healthz, OAuth metadata, optional direct `GET …/v1/account`, MCP `initialize` + `tools/list` + **`tools/call`** (default `get_account_status`). Env matches `validate_mcp_sandbox.sh`.
+- **`scripts/smoke-mcp-http.mjs`** — Node **18+** smoke test: healthz, OAuth metadata, optional direct `GET …/v1/account`, MCP `initialize` + `tools/list` + **`tools/call`** (default `get_account_status`). Env matches `validate_mcp_sandbox.sh`.
 
 - **E2E validation plan** [docs/e2e-mcp-pre-claude-validation-plan.md](docs/e2e-mcp-pre-claude-validation-plan.md): phased checklist (pytest, REST API, OAuth MCP, Docker, tool→API, gates before Claude).
 - **Optional integration test** `tests/test_cognito_jwt_integration.py`: with `EDA_INTEGRATION_COGNITO_ACCESS_TOKEN` and `EDA_COGNITO_*` set, runs `initialize` + `tools/list` on the HTTP app using **real** Cognito JWKS verification (skipped in default CI).

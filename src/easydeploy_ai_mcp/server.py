@@ -307,7 +307,7 @@ async def start_upload(
     Pass dataset_id when uploading a new version of an existing dataset.
     """
     ds = dataset_id.strip() or None
-    data = await api_client.get_presigned_upload_url(
+    data = await api_client.get_upload_url(
         filename, project_id, **_kw(), dataset_id=ds,
     )
     gateway_url_raw = str(data.get("gatewayUploadUrl", "")).strip()
@@ -357,6 +357,9 @@ async def complete_upload(
     dataset_id: optional target dataset id for creating a new version.
       If the dataset already exists, a new version is created automatically.
     dataset_type: train | test | validation (default train).
+
+    The gateway PUT from start_upload must return **HTTP 2xx** before you call
+    this tool; otherwise the API responds with **400** (upload session not UPLOADED yet).
 
     Returns the dataset record with id, name, and the new datasetVersion.
     """

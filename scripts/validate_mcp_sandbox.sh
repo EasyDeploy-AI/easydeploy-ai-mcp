@@ -3,7 +3,7 @@
 set -euo pipefail
 
 MCP_SMOKE_BASE_URL="${MCP_SMOKE_BASE_URL:-http://127.0.0.1:8080}"
-EDA_API_BASE="${EDA_API_BASE:-https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod}"
+EDA_API_BASE="${EDA_API_BASE:-https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod}"
 
 # Match normalize_api_base: strip trailing slashes, ensure single /v1 suffix
 api_v1_base="${EDA_API_BASE%/}"

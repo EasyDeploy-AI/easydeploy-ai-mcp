@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run HTTP MCP smoke against a public (or staging) MCP URL with a bearer token.
-# Obtain token via PKCE: scripts/cognito_mcp_get_access_token.py (or accessible-ai copy).
+# Obtain token via PKCE: scripts/cognito_mcp_get_access_token.py
 #
 # Required env:
 #   MCP_SMOKE_BASE_URL   e.g. https://mcp.example.com  (no trailing slash)

@@ -138,7 +138,7 @@ const mcpBase = (
   .replace(/\/$/, '');
 
 const apiBaseDefault =
-  process.env.EDA_API_BASE || 'https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod';
+  process.env.EDA_API_BASE || 'https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod';
 const apiV1 = normalizeApiV1Base(flags['api-base'] || apiBaseDefault);
 
 const skipDirectApi = flags['skip-direct-api'] === true;

@@ -102,7 +102,7 @@ async def test_eda_mcp_start_upload_delegates_to_presign(eda_mcp_server):
         "datasetId": "ds-new",
     }
     mock_fn = AsyncMock(return_value=presign)
-    with patch("easydeploy_ai_mcp.server.api_client.get_presigned_upload_url", mock_fn):
+    with patch("easydeploy_ai_mcp.server.api_client.get_upload_url", mock_fn):
         async with Client(eda_mcp_server) as client:
             result = await client.call_tool("start_upload", {
                 "filename": "train.csv",
@@ -451,7 +451,7 @@ async def test_eda_mcp_start_upload_returns_gateway_curl_command(eda_mcp_server)
         "datasetId": "ds-new",
     }
     mock_fn = AsyncMock(return_value=presign)
-    with patch("easydeploy_ai_mcp.server.api_client.get_presigned_upload_url", mock_fn):
+    with patch("easydeploy_ai_mcp.server.api_client.get_upload_url", mock_fn):
         async with Client(eda_mcp_server) as client:
             result = await client.call_tool("start_upload", {
                 "filename": "data.csv",

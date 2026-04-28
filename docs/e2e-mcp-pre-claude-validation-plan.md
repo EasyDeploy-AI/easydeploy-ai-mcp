@@ -7,8 +7,8 @@ Run this sequence **before** you deploy the HTTP MCP server to a shared URL and 
 | Topic | Document |
 |--------|-----------|
 | Sandbox API base + smoke script env | [sandbox-mcp-validation.md](sandbox-mcp-validation.md) |
-| Cognito MCP client, callbacks, where to find ids | [accessible-ai: cognito-mcp-claude-oauth.md](https://github.com/easydeploy-ai/accessible-ai/blob/main/docs/operations/cognito-mcp-claude-oauth.md) |
-| ALB / Fargate / secrets for MCP host | [aws-p0.md](aws-p0.md), **accessible-ai-cdk** `EasyDeployMcpHost` (**DEVELOPMENT.md** in that repo) |
+| Cognito MCP client, callbacks, where to find ids | Your Amplify backend's Cognito MCP OAuth docs |
+| ALB / Fargate / secrets for MCP host | [aws-p0.md](aws-p0.md), your CDK `EasyDeployMcpHost` stack |
 | Claude connector fields | [claude-getting-started.md](claude-getting-started.md) |
 
 ---
@@ -38,10 +38,10 @@ The table below lists **public** sandbox values useful for copy-paste validation
 | Item | Example (EasyDeploy sandbox) |
 |------|------------------------------|
 | Region | `us-east-1` |
-| `EDA_API_BASE` | `https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod` |
-| User pool id | `us-east-1_WLnwphMyA` |
-| MCP OAuth app client id (`McpClaudeOauthUserPoolClientId`) | `33i7qdh13hi3aafjv2qibljt31` |
-| Cognito issuer (JWKS; JWT **`iss`** claim) | `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_WLnwphMyA` |
+| `EDA_API_BASE` | `https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod` |
+| User pool id | `us-east-1_XXXXXXXXX` |
+| MCP OAuth app client id (`McpClaudeOauthUserPoolClientId`) | `your-cognito-client-id` |
+| Cognito issuer (JWKS; JWT **`iss`** claim) | `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX` |
 | MCP OAuth **`authorization_servers[0]`** (discovery) | `https://<mcp-host>` (same origin as `resource` without `/mcp`) |
 | Hosted UI domain | From **Cognito → App integration → Domain**: default is `<prefix>.auth.us-east-1.amazoncognito.com` (prefix is pool-specific). A **custom** domain (e.g. `auth.sandbox.easydeploy.ai`) only works after Hosted UI + domain are fully active—if you see **Login pages unavailable**, use the default `*.amazoncognito.com` host for PKCE until fixed. |
 
@@ -66,7 +66,7 @@ The table below lists **public** sandbox values useful for copy-paste validation
 Set (sandbox example; replace with your stage URL if different):
 
 ```bash
-export EDA_API_BASE="https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod"
+export EDA_API_BASE="https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod"
 # Effective REST prefix: ${EDA_API_BASE}/v1/... after client normalization
 ```
 
@@ -82,13 +82,13 @@ export EDA_API_BASE="https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod
 # Use your pool’s domain from Cognito (default *.amazoncognito.com is most reliable for local PKCE).
 python3 scripts/cognito_mcp_get_access_token.py \
   --cognito-host "<prefix>.auth.us-east-1.amazoncognito.com" \
-  --client-id "33i7qdh13hi3aafjv2qibljt31"
+  --client-id "your-cognito-client-id"
 # Then: export the printed EDA_SMOKE_ACCESS_TOKEN and curl Phase 1.3 with that bearer.
 ```
 
 If the token **POST** fails with **`CERTIFICATE_VERIFY_FAILED`**, run macOS **Install Certificates.command**, or add `--insecure-ssl` (dev only). See [sandbox-mcp-validation.md](sandbox-mcp-validation.md#pkce-script-troubleshooting).
 
-The **accessible-ai** repo also ships **`scripts/cognito_mcp_get_access_token.py`** with the same purpose. See the Cognito runbook linked above.
+See the PKCE troubleshooting section in [sandbox-mcp-validation.md](sandbox-mcp-validation.md#pkce-script-troubleshooting).
 
 ---
 
@@ -100,10 +100,10 @@ Set (sandbox example):
 
 ```bash
 export EDA_OAUTH_ENABLED=1
-export EDA_COGNITO_USER_POOL_ID="us-east-1_WLnwphMyA"
-export EDA_COGNITO_CLIENT_ID="33i7qdh13hi3aafjv2qibljt31"
+export EDA_COGNITO_USER_POOL_ID="us-east-1_XXXXXXXXX"
+export EDA_COGNITO_CLIENT_ID="your-cognito-client-id"
 export EDA_COGNITO_REGION="us-east-1"
-export EDA_API_BASE="https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod"
+export EDA_API_BASE="https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod"
 unset MCP_SERVICE_TOKEN
 ```
 
@@ -123,7 +123,7 @@ unset MCP_SERVICE_TOKEN
 
 | Step | Command / action | Pass criteria |
 |------|------------------|---------------|
-| 3.1 | `docker run --rm -p 8080:8080 -e EDA_OAUTH_ENABLED=1 -e EDA_API_BASE="https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod" -e EDA_COGNITO_USER_POOL_ID="us-east-1_WLnwphMyA" -e EDA_COGNITO_CLIENT_ID="33i7qdh13hi3aafjv2qibljt31" -e EDA_COGNITO_REGION="us-east-1" eda-mcp-test` | Container healthy |
+| 3.1 | `docker run --rm -p 8080:8080 -e EDA_OAUTH_ENABLED=1 -e EDA_API_BASE="https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod" -e EDA_COGNITO_USER_POOL_ID="us-east-1_XXXXXXXXX" -e EDA_COGNITO_CLIENT_ID="your-cognito-client-id" -e EDA_COGNITO_REGION="us-east-1" eda-mcp-test` | Container healthy |
 | 3.2 | Repeat Phase 2.2–2.4 against `http://127.0.0.1:8080` | Same pass criteria |
 
 ---

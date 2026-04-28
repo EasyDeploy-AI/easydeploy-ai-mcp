@@ -19,6 +19,24 @@ import httpx
 from .defaults import DEFAULT_EDA_API_BASE
 
 
+def _eda_api_error_detail(response: httpx.Response) -> str:
+    """Best-effort message from EasyDeploy JSON error body for MCP / logs."""
+    try:
+        j = response.json()
+        if isinstance(j, dict):
+            err = j.get("error")
+            if isinstance(err, dict):
+                parts = [err.get("code"), err.get("message"), err.get("requestId")]
+                line = " | ".join(str(p) for p in parts if p)
+                if line:
+                    return line
+        text = response.text
+        return (text[:1200] if text else "") or response.reason_phrase
+    except Exception:
+        text = response.text
+        return (text[:1200] if text else "") or response.reason_phrase
+
+
 @asynccontextmanager
 async def _secure_client(**kwargs: object) -> AsyncIterator[httpx.AsyncClient]:
     """Return an httpx client with TLS certificate verification enforced."""
@@ -227,7 +245,13 @@ async def complete_dataset_upload(
             json=body,
             timeout=120.0,
         )
-        resp.raise_for_status()
+        if resp.is_error:
+            detail = _eda_api_error_detail(resp)
+            raise httpx.HTTPStatusError(
+                f"{resp.status_code} {resp.reason_phrase} for {resp.request.url!r}\n{detail}",
+                request=resp.request,
+                response=resp,
+            )
         return resp.json()["data"]
 
 
@@ -387,7 +411,7 @@ async def patch_dataset_version(
         return resp.json()["data"]
 
 
-async def get_presigned_upload_url(
+async def get_upload_url(
     filename: str,
     project_id: str,
     *,
@@ -397,9 +421,11 @@ async def get_presigned_upload_url(
     caller_channel: str = "",
 ) -> dict:
     """
-    POST /uploads/url — returns gatewayUploadUrl + uploadRequestId for API Gateway upload.
-    Omit dataset_id for a new dataset (API generates an id — use it as body.id when creating the dataset).
-    Pass dataset_id to add a version under an existing dataset path.
+    Request a gateway upload URL for a dataset file.
+
+    Calls POST /uploads/url and returns a gatewayUploadUrl for a direct PUT
+    to the API Gateway. Note: this is NOT a presigned S3 URL. See architecture
+    docs for rationale.
     """
     payload: dict[str, str] = {"filename": filename, "projectId": project_id}
     if dataset_id:

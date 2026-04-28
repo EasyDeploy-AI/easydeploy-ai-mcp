@@ -4,14 +4,14 @@
 # Env: EDA_API_BASE (default: sandbox URL from .env.example)
 #      MCP_BASE (optional HTTPS URL of MCP host for GET /.well-known/oauth-protected-resource)
 #      EXPECTED_ISSUER (optional; default derived from pool id below)
-#      EDA_COGNITO_USER_POOL_ID (optional; default us-east-1_WLnwphMyA)
+#      EDA_COGNITO_USER_POOL_ID (optional; default us-east-1_XXXXXXXXX)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-EDA_API_BASE="${EDA_API_BASE:-https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod}"
-POOL="${EDA_COGNITO_USER_POOL_ID:-us-east-1_WLnwphMyA}"
+EDA_API_BASE="${EDA_API_BASE:-https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod}"
+POOL="${EDA_COGNITO_USER_POOL_ID:-us-east-1_XXXXXXXXX}"
 REGION="${EDA_COGNITO_REGION:-us-east-1}"
 EXPECTED_ISSUER="${EXPECTED_ISSUER:-https://cognito-idp.${REGION}.amazonaws.com/${POOL}}"
 

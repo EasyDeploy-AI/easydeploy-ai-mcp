@@ -14,7 +14,7 @@ if [[ -z "${EDA_API_KEY:-}" ]]; then
   exit 1
 fi
 
-EDA_API_BASE="${EDA_API_BASE:-https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod}"
+EDA_API_BASE="${EDA_API_BASE:-https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod}"
 api_v1_base="${EDA_API_BASE%/}"
 if [[ "${api_v1_base}" != */v1 ]]; then
   api_v1_base="${api_v1_base}/v1"

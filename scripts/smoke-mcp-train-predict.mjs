@@ -4,7 +4,7 @@
 /**
  * EasyDeploy AI — HTTP MCP full smoke: train a model + ad-hoc prediction
  *
- * Drives the same path as accessible-ai/scripts/smoke-public-api.mjs, but every
+ * Drives the same upload → train → predict path as the public API smoke, but every
  * step is tools/call on Streamable HTTP /mcp (plus one gateway PUT for CSV upload).
  *
  * Usage:
@@ -84,8 +84,7 @@ function resolveDefaultCsv() {
   const candidates = [
     process.env.EDA_SMOKE_CSV,
     resolve(__dirname, `../test/data/${SAMPLE_CSV}`),
-    resolve(__dirname, `../../../Amplify/accessible-ai/test/data/${SAMPLE_CSV}`),
-    resolve(__dirname, `../../../AAI/accessible-ai-cdk/test/data/${SAMPLE_CSV}`),
+    // Add your own test data paths here if needed
     resolve(process.cwd(), `test/data/${SAMPLE_CSV}`),
   ].filter(Boolean);
   for (const p of candidates) {
@@ -96,7 +95,7 @@ function resolveDefaultCsv() {
 }
 
 /**
- * Same ad-hoc row as accessible-ai/scripts/smoke-public-api.mjs.
+ * Same ad-hoc row as the public API smoke script.
  * Wisconsin CSV uses spaces in three column names; the API matches training feature names exactly.
  */
 const ADHOC_INPUT = {
@@ -178,7 +177,7 @@ async function main() {
     resolvedCsv = resolveDefaultCsv();
     if (!resolvedCsv) {
       fail(
-        `No CSV found. Pass --file <path> or set EDA_SMOKE_CSV, or add ${SAMPLE_CSV} under test/data (see accessible-ai / accessible-ai-cdk).`,
+        `No CSV found. Pass --file <path> or set EDA_SMOKE_CSV, or add ${SAMPLE_CSV} under test/data.`,
       );
     }
   }

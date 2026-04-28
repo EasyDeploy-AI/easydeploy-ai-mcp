@@ -11,4 +11,4 @@ Extra guides for **easydeploy-ai-mcp** beyond the [project README](../README.md)
 | [claude-remote-connector.md](claude-remote-connector.md) | After deploy: DNS, RFC 9728 check, Claude custom connector URL, remote smoke. |
 | [sandbox-mcp-validation.md](sandbox-mcp-validation.md) | Sandbox checklist, `validate_mcp_sandbox.sh`, Node `smoke-mcp-http.mjs`, and `smoke-mcp-train-predict.mjs` (train + predict via MCP). |
 | [e2e-mcp-pre-claude-validation-plan.md](e2e-mcp-pre-claude-validation-plan.md) | Full E2E + integration order: pytest, REST API, OAuth MCP local/Docker, gates before Claude. |
-| (internal) **accessible-ai-cdk** | Stack **EasyDeployMcpHost**: VPC + Fargate + ALB, ECR image; see that repo’s **DEVELOPMENT.md**. |
+| [aws-p0.md](aws-p0.md) (CDK hosting) | Stack **EasyDeployMcpHost**: VPC + Fargate + ALB, ECR image; see your CDK repo’s **DEVELOPMENT.md**. |

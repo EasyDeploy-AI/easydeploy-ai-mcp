@@ -61,9 +61,9 @@ Push to ECR and reference the digest in the task definition.
 
 ## Infrastructure as code
 
-**EasyDeploy internal CDK:** the **`accessible-ai-cdk`** repository defines stack **`EasyDeployMcpHost`** (**VPC + Fargate + ALB**), pulling the image from **ECR** after you build/push the [Dockerfile](../Dockerfile) from this repo. Task env matches the **sandbox-tested** OAuth/API settings (override with `-c`); use `-c certificateArn=…` for HTTPS (Claude). See that repo’s **DEVELOPMENT.md**.
+Deploy with a CDK stack **`EasyDeployMcpHost`** (**VPC + Fargate + ALB**), pulling the image from **ECR** after you build/push the [Dockerfile](../Dockerfile) from this repo. Task env matches the **sandbox-tested** OAuth/API settings (override with `-c`); use `-c certificateArn=…` for HTTPS (Claude).
 
-If your organization uses a different **infrastructure-as-code** repository (Terraform, Pulumi, etc.), replicate the same pattern: ECR image + ALB + Fargate + env from **`.env.example`**. **Follow-up:** promote a reusable module into your org’s standard IaC library once the container image and ports are stable.
+If your organization uses a different **infrastructure-as-code** tool (Terraform, Pulumi, etc.), replicate the same pattern: ECR image + ALB + Fargate + env from **`.env.example`**. Promote a reusable module into your org’s standard IaC library once the container image and ports are stable.
 
 ## Compliance (SOC 2)
 

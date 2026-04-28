@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Interactive PKCE login against Cognito Hosted UI for the MCP app client
-(same idea as accessible-ai/scripts/cognito_mcp_get_access_token.py; this copy
-lives in easydeploy-ai-mcp so you can run it from this repo).
+Interactive PKCE login for obtaining an access token for MCP testing.
 
 Prints a shell-ready export for EDA_SMOKE_ACCESS_TOKEN.
 

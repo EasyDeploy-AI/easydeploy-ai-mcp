@@ -7,7 +7,7 @@ server can act as an OAuth 2.0 protected resource (RFC 9728). API keys
 to the EasyDeploy REST API, which is the source of truth for API key state.
 
 Configuration (all required when ``EDA_OAUTH_ENABLED=1``):
-    EDA_COGNITO_USER_POOL_ID    e.g. ``us-east-1_WLnwphMyA``
+    EDA_COGNITO_USER_POOL_ID    e.g. ``us-east-1_XXXXXXXXX``
     EDA_COGNITO_CLIENT_ID       e.g. ``7gbpkrusg9j2lhtoor4vj7uim4``
     EDA_COGNITO_REGION          e.g. ``us-east-1``
 

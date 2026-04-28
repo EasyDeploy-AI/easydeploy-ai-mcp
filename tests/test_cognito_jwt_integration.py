@@ -13,7 +13,7 @@ Run (after ``pip install -e ".[dev]"`` — includes ``pyjwt[crypto]``)::
 
     pytest tests/test_cognito_jwt_integration.py -v
 
-Obtain a token with ``accessible-ai/scripts/cognito_mcp_get_access_token.py`` or Claude OAuth.
+Obtain a token with ``scripts/cognito_mcp_get_access_token.py`` or Claude OAuth.
 """
 
 from __future__ import annotations
