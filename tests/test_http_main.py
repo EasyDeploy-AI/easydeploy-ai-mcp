@@ -32,6 +32,16 @@ def test_mcp_path_requires_bearer_when_token_set(monkeypatch):
             headers={"Authorization": "Bearer secret-token"},
         )
         assert r_ok.status_code != 401
+        pre = client.options(
+            "/mcp",
+            headers={
+                "Origin": "https://claude.ai",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        assert pre.status_code == 200
+        assert pre.headers.get("access-control-allow-origin") == "https://claude.ai"
 
     monkeypatch.delenv("MCP_SERVICE_TOKEN", raising=False)
     importlib.reload(http_main)

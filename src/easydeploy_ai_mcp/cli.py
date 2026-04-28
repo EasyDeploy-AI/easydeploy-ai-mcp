@@ -18,9 +18,16 @@ def run_http() -> None:
 
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "8080"))
+    trust = os.environ.get("EDA_TRUST_FORWARDED_HEADERS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     uvicorn.run(
         "easydeploy_ai_mcp.http_main:app",
         host=host,
         port=port,
         factory=False,
+        proxy_headers=True,
+        forwarded_allow_ips="*" if trust else "127.0.0.1",
     )

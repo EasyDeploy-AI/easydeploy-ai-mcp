@@ -2,7 +2,7 @@
 
 This guide is for **EasyDeploy AI customers** who want to use **Claude** with the EasyDeploy MCP integration. You need an EasyDeploy account and the connection details your team or EasyDeploy provides.
 
-**Hosting the MCP server on AWS or Docker** (for a shared remote URL) is covered in the [README](../README.md) and [aws-p0.md](aws-p0.md), not here.
+**Hosting the MCP server on AWS or Docker** (for a shared remote URL) is covered in the [README](../README.md), not here.
 
 ---
 
@@ -24,8 +24,8 @@ Screenshots for Option A will be added here later.
   - **Name:** Any label you like (e.g. `EasyDeploy`).
   - **Remote MCP Server URL:** Paste the MCP URL you were given (must be `https://…` and include the `/mcp` path if that is how it was provided).
 3. Expand **^ Advanced Settings**:
-  - **OAuth Client ID (optional)** — Leave empty unless your administrator told you to set it.
-  - **OAuth Client Secret (optional)** — Same as above.
+  - **OAuth Client ID (optional)** — Leave empty for the hosted connector (`https://mcp.easydeploy.ai/mcp`); your administrator will provide this if you are connecting to a self-hosted instance with a custom Cognito app client.
+  - **OAuth Client Secret (optional)** — Leave empty; the EasyDeploy MCP OAuth client is public (PKCE) and has no secret.
 4. Save the connector, then use Claude as usual. You should see EasyDeploy-related tools when the connection succeeds.
 
 If your setup uses a **bearer token** for the MCP server, your administrator will tell you where to enter it in Claude (wording in the app can change between versions).
@@ -112,5 +112,5 @@ If your plan includes **custom connectors**, use Option A: add a connector and p
 ## More help
 
 - **Connection errors or security questions:** [claude.md](claude.md) (transports, tokens, health checks).
-- **Install or run the HTTP server / Docker / AWS:** [README.md](../README.md), [aws-p0.md](aws-p0.md).
+- **Install or run the HTTP server / Docker / AWS:** [README.md](../README.md).
 
