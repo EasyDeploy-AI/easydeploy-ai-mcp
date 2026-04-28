@@ -40,7 +40,7 @@ def fetch_cognito_openid_configuration_json(cognito_issuer: str) -> dict[str, An
     """GET Cognito ``openid-configuration`` (cached)."""
     url = f"{cognito_issuer.rstrip('/')}/.well-known/openid-configuration"
     try:
-        resp = httpx.get(url, timeout=15.0)
+        resp = httpx.get(url, timeout=15.0, verify=True)
     except httpx.RequestError as e:
         raise OidcFetchError(f"OIDC discovery request failed: {e}") from e
     if resp.status_code != 200:

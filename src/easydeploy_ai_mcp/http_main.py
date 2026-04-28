@@ -50,6 +50,7 @@ see the right token.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
 import time
@@ -97,7 +98,12 @@ def _mcp_oauth_issuer(request: Request) -> str:
     """
     override = os.environ.get("EDA_MCP_OAUTH_ISSUER", "").strip()
     if override:
-        return override.rstrip("/")
+        issuer = override.rstrip("/")
+        if not issuer.startswith("https://"):
+            raise ValueError(
+                f"EDA_MCP_OAUTH_ISSUER must be an HTTPS URL, got: {issuer!r}"
+            )
+        return issuer
     return f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
 
 
@@ -193,7 +199,8 @@ async def oauth_static_client_registration(request: Request) -> JSONResponse:
     expect ``registration_endpoint`` and a ``client_id``; we always return the pool's
     pre-configured MCP OAuth client (``EDA_COGNITO_CLIENT_ID``).
     """
-    assert _OAUTH_CONFIG is not None
+    if _OAUTH_CONFIG is None:
+        return JSONResponse({"detail": "OAuth not configured"}, status_code=404)
     reg_body: dict = {}
     try:
         raw = await request.body()
@@ -226,7 +233,8 @@ async def oauth_static_client_registration(request: Request) -> JSONResponse:
 
 
 async def _cognito_oidc_dict() -> dict:
-    assert _OAUTH_CONFIG is not None
+    if _OAUTH_CONFIG is None:
+        raise RuntimeError("OAuth not configured")
     return await asyncio.to_thread(
         oauth_as_metadata.fetch_cognito_openid_configuration_json,
         _OAUTH_CONFIG.issuer,
@@ -267,6 +275,8 @@ async def proxy_oauth_authorize(request: Request) -> Response:
     authz = oidc.get("authorization_endpoint")
     if not isinstance(authz, str) or not authz:
         return JSONResponse({"detail": "Missing authorization_endpoint"}, status_code=502)
+    if not authz.startswith("https://"):
+        return JSONResponse({"detail": "Upstream authorization_endpoint is not HTTPS"}, status_code=502)
     q = _strip_resource_query_param(request.url.query)
     target = f"{authz}?{q}" if q else authz
     return RedirectResponse(url=target, status_code=302)
@@ -288,6 +298,8 @@ async def proxy_oauth_token(request: Request) -> Response:
     token_ep = oidc.get("token_endpoint")
     if not isinstance(token_ep, str) or not token_ep:
         return JSONResponse({"detail": "Missing token_endpoint"}, status_code=502)
+    if not token_ep.startswith("https://"):
+        return JSONResponse({"detail": "Upstream token_endpoint is not HTTPS"}, status_code=502)
 
     headers: dict[str, str] = {}
     if request.method == "GET":
@@ -307,7 +319,7 @@ async def proxy_oauth_token(request: Request) -> Response:
         headers["Authorization"] = auth_h
 
     timeout = httpx.Timeout(30.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
         try:
             resp = await client.post(token_ep, content=body, headers=headers)
         except httpx.RequestError as e:
@@ -329,7 +341,7 @@ class _ServiceTokenMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if not _SERVICE_TOKEN:
             return await call_next(request)
-        if _bearer_from_header(request) != _SERVICE_TOKEN:
+        if not hmac.compare_digest(_bearer_from_header(request), _SERVICE_TOKEN):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
@@ -364,7 +376,8 @@ class _OAuthResourceServerMiddleware(BaseHTTPMiddleware):
         if not token:
             return _unauthorized(request, "Missing bearer token")
         if not auth.looks_like_api_key(token):
-            assert _OAUTH_CONFIG is not None  # guaranteed by enabled flag
+            if _OAUTH_CONFIG is None:
+                return _unauthorized(request, "OAuth not configured", error="invalid_token")
             try:
                 auth.verify_cognito_access_token(token, _OAUTH_CONFIG)
             except auth.AuthError as e:

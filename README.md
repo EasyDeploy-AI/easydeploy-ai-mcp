@@ -6,6 +6,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that ex
 
 ## Contents
 
+- [Connect with Claude](#connect-with-claude)
 - [What you get](#what-you-get)
 - [Requirements](#requirements)
 - [Install](#install)
@@ -18,6 +19,68 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that ex
 - [Development](#development)
 - [Security](#security)
 - [License](#license)
+
+## Connect with Claude
+
+### Option A — Hosted connector (zero setup)
+
+The fastest way to use EasyDeploy AI tools in Claude. No installation required.
+
+1. Open **Claude** (web at [claude.ai](https://claude.ai) or Claude Desktop).
+2. Go to **Settings → Connectors → Add custom connector**.
+3. Fill in the form:
+   - **Name:** `EasyDeploy AI`
+   - **URL:** `https://mcp.easydeploy.ai/mcp`
+4. Complete the OAuth sign-in flow when prompted. Claude will redirect you to EasyDeploy to authenticate with your account.
+5. Save the connector. EasyDeploy tools will appear in your Claude sessions.
+
+> **Note:** The hosted connector uses OAuth — you sign in with your EasyDeploy account; no API key needs to be pasted into Claude.
+
+---
+
+### Option B — Self-hosted (local stdio)
+
+Run the MCP server on your own machine using your EasyDeploy API key. Nothing is exposed to the internet.
+
+**1. Install**
+
+```bash
+pip install easydeploy-ai-mcp
+```
+
+**2. Add to Claude Desktop config**
+
+Edit (or create) the Claude Desktop config file:
+
+| OS      | Path |
+| ------- | ---- |
+| macOS   | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+
+Merge the following into the root of that JSON (keep any existing keys):
+
+```json
+{
+  "mcpServers": {
+    "EasyDeploy AI": {
+      "command": "easydeploy-ai-mcp-stdio",
+      "env": {
+        "EDA_API_KEY": "eda_live_YOUR_KEY"
+      }
+    }
+  }
+}
+```
+
+Replace `eda_live_YOUR_KEY` with your key from **Account → API Keys** in the EasyDeploy dashboard. Use the full path to `easydeploy-ai-mcp-stdio` (run `which easydeploy-ai-mcp-stdio` to find it) if Claude cannot locate it on your `PATH`.
+
+**3. Restart Claude Desktop**
+
+Fully quit and reopen the app. **EasyDeploy AI** will appear in your MCP servers.
+
+---
+
+For self-hosting on AWS (Fargate + ALB) or Docker, see [Remote MCP (HTTP)](#remote-mcp-http) and [docs/aws-p0.md](docs/aws-p0.md).
 
 ## What you get
 
@@ -119,8 +182,7 @@ Pick exactly one (setting both `EDA_OAUTH_ENABLED` and `MCP_SERVICE_TOKEN` raise
   `EDA_COGNITO_USER_POOL_ID` and `EDA_COGNITO_CLIENT_ID`. Set **`EDA_COGNITO_CLIENT_ID`**
   to the **MCP OAuth** Cognito app client id (EasyDeploy Amplify deploy emits the
   CloudFormation output **`McpClaudeOauthUserPoolClientId`**) — not the web SPA
-  client id. Operators: see **docs/operations/cognito-mcp-claude-oauth.md** in the
-  EasyDeploy backend (accessible-ai) repository. Install the optional
+  client id. Install the optional
   extra: `pip install easydeploy-ai-mcp[oauth]`. The server validates incoming
   Cognito **access** JWTs locally against the Cognito JWKS (issuer, signature,
   `exp`, `token_use=='access'`, `client_id`) and forwards the token to the
@@ -147,7 +209,7 @@ Pick exactly one (setting both `EDA_OAUTH_ENABLED` and `MCP_SERVICE_TOKEN` raise
 # Example: legacy API-key mode with explicit env (no .env)
 ./scripts/run_mcp_docker_local.sh \
   -e EDA_API_KEY="eda_live_..." \
-  -e EDA_API_BASE="https://h3h0z4vkf1.execute-api.us-east-1.amazonaws.com/prod"
+  -e EDA_API_BASE="https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/prod"
 
 # OAuth mode: put EDA_OAUTH_ENABLED, EDA_COGNITO_*, EDA_API_BASE in .env (omit EDA_API_KEY), then:
 ./scripts/run_mcp_docker_local.sh
@@ -156,7 +218,7 @@ Pick exactly one (setting both `EDA_OAUTH_ENABLED` and `MCP_SERVICE_TOKEN` raise
 PORT=9000 ./scripts/run_mcp_docker_local.sh
 ```
 
-**Host on AWS (Fargate + ALB):** build and push this repo’s **Dockerfile** to **ECR**, then deploy stack **`EasyDeployMcpHost`** from the internal **`accessible-ai-cdk`** repository (see its **README** / **DEVELOPMENT.md**). Task env matches **`.env.example`**; pass **`-c certificateArn=…`** for HTTPS (Claude). See **[docs/mcp-host-preflight.md](docs/mcp-host-preflight.md)** and **[docs/claude-remote-connector.md](docs/claude-remote-connector.md)**.
+**Host on AWS (Fargate + ALB):** build and push this repo’s **Dockerfile** to **ECR**, then deploy your CDK stack **`EasyDeployMcpHost`**. Task env matches **`.env.example`**; pass **`-c certificateArn=…`** for HTTPS (Claude). See **[docs/aws-p0.md](docs/aws-p0.md)**, **[docs/mcp-host-preflight.md](docs/mcp-host-preflight.md)**, and **[docs/claude-remote-connector.md](docs/claude-remote-connector.md)**.
 
 Manual equivalent:
 
@@ -173,7 +235,7 @@ docker run --rm -p 8080:8080 \
 - **[docs/claude-getting-started.md](docs/claude-getting-started.md)** — EasyDeploy + Claude: Connectors or local Desktop config JSON
 - **[docs/claude.md](docs/claude.md)** — Claude Connectors vs Claude Code, transports, headers
 - **[docs/aws-p0.md](docs/aws-p0.md)** — lean AWS deployment and security checklist
-- **accessible-ai-cdk** (`EasyDeployMcpHost` stack) — internal CDK: VPC + Fargate + ALB, ECR image (documented in that repo’s **DEVELOPMENT.md**)
+- Your CDK or IaC repo (`EasyDeployMcpHost` stack) — VPC + Fargate + ALB, ECR image (see [docs/aws-p0.md](docs/aws-p0.md))
 - **[docs/mcp-host-preflight.md](docs/mcp-host-preflight.md)** — confirm stack env vs `.env.example` before deploy
 - **[docs/claude-remote-connector.md](docs/claude-remote-connector.md)** — DNS, HTTPS metadata, Claude connector URL
 
@@ -194,7 +256,7 @@ pytest
 
 **Optional — HTTP MCP smoke (Node 18+):** with `easydeploy-ai-mcp-http` or Docker listening, run `node scripts/smoke-mcp-http.mjs` (same env vars as `scripts/validate_mcp_sandbox.sh`; adds `tools/call` for `get_account_status`). For **full train + ad-hoc prediction** via MCP tools, run `node scripts/smoke-mcp-train-predict.mjs --file <csv>` (see [docs/sandbox-mcp-validation.md](docs/sandbox-mcp-validation.md)).
 
-**Optional — real Cognito JWT against the HTTP app** (live JWKS, no mocks): set `EDA_INTEGRATION_COGNITO_ACCESS_TOKEN` plus the same `EDA_COGNITO_*` vars you use for OAuth mode, then run `pytest tests/test_cognito_jwt_integration.py -v`. See the docstring in that file. Get a token with the PKCE helper in the accessible-ai repo (`scripts/cognito_mcp_get_access_token.py`).
+**Optional — real Cognito JWT against the HTTP app** (live JWKS, no mocks): set `EDA_INTEGRATION_COGNITO_ACCESS_TOKEN` plus the same `EDA_COGNITO_*` vars you use for OAuth mode, then run `pytest tests/test_cognito_jwt_integration.py -v`. See the docstring in that file. Get a token with `scripts/cognito_mcp_get_access_token.py`.
 
 **Shipping remote MCP / Claude:** follow the phased checklist in [docs/e2e-mcp-pre-claude-validation-plan.md](docs/e2e-mcp-pre-claude-validation-plan.md).
 
