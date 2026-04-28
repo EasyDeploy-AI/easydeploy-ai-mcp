@@ -8,12 +8,12 @@ Run (after ``pip install -e ".[dev]"`` — includes ``pyjwt[crypto]``)::
 
     export EDA_INTEGRATION_COGNITO_ACCESS_TOKEN="eyJ..."  # access JWT from MCP app client
     export EDA_COGNITO_USER_POOL_ID="us-east-1_xxxx"
-    export EDA_COGNITO_CLIENT_ID="<McpClaudeOauthUserPoolClientId>"
+    export EDA_COGNITO_CLIENT_ID="<your-cognito-app-client-id>"
     export EDA_COGNITO_REGION="us-east-1"
 
     pytest tests/test_cognito_jwt_integration.py -v
 
-Obtain a token with ``scripts/cognito_mcp_get_access_token.py`` or Claude OAuth.
+Obtain a token via the Cognito Hosted UI or Claude OAuth flow.
 """
 
 from __future__ import annotations

@@ -7,11 +7,7 @@
 #   PORT=9000 ./scripts/run_mcp_docker_local.sh …
 #
 # If a file named `.env` exists in the repo root, it is passed as `--env-file` (gitignored).
-# You can copy `.env.example` → `.env` and fill values.
-#
-# Smoke tests from another terminal:
-#   export MCP_SMOKE_BASE_URL=http://127.0.0.1:${PORT:-8080}
-#   ./scripts/validate_mcp_sandbox.sh
+# Create a `.env` file with your env vars (see README for the full list).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,7 +25,7 @@ if [[ -f .env ]]; then
   echo "Using ${ROOT}/.env"
 else
   echo "Note: no ${ROOT}/.env — container starts with image defaults only." >&2
-  echo "      For OAuth/Cognito, run: cp .env.example .env && edit .env, then rerun this script." >&2
+  echo "      Create a .env file with your env vars (see README) and rerun." >&2
 fi
 
 exec docker run "${RUN_ARGS[@]}" "$@" "${IMAGE}"

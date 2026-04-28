@@ -24,8 +24,8 @@ Screenshots for Option A will be added here later.
   - **Name:** Any label you like (e.g. `EasyDeploy`).
   - **Remote MCP Server URL:** Paste the MCP URL you were given (must be `https://…` and include the `/mcp` path if that is how it was provided).
 3. Expand **^ Advanced Settings**:
-  - **OAuth Client ID (optional)** — If your team uses **Cognito OAuth** on the MCP server, your administrator may give you the **MCP app client id** (EasyDeploy backend CloudFormation output `McpClaudeOauthUserPoolClientId`). Paste it here when instructed; otherwise leave empty.
-  - **OAuth Client Secret (optional)** — Only if your administrator issued a **confidential** client; the standard EasyDeploy MCP Cognito client is **public** (PKCE) and has no secret.
+  - **OAuth Client ID (optional)** — Leave empty for the hosted connector (`https://mcp.easydeploy.ai/mcp`); your administrator will provide this if you are connecting to a self-hosted instance with a custom Cognito app client.
+  - **OAuth Client Secret (optional)** — Leave empty; the EasyDeploy MCP OAuth client is public (PKCE) and has no secret.
 4. Save the connector, then use Claude as usual. You should see EasyDeploy-related tools when the connection succeeds.
 
 If your setup uses a **bearer token** for the MCP server, your administrator will tell you where to enter it in Claude (wording in the app can change between versions).

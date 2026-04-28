@@ -7,7 +7,7 @@ Tool definitions follow the EasyDeploy public REST API; keep them aligned when t
 Local stdio: run ``easydeploy-ai-mcp-stdio`` (or ``python -m easydeploy_ai_mcp``) with env
 ``EDA_API_KEY`` set (from the dashboard). Optional ``EDA_API_BASE`` overrides the production API host for internal use only.
 
-Remote HTTP: run ``easydeploy-ai-mcp-http`` or uvicorn ``easydeploy_ai_mcp.http_main:app``; see README and docs/aws-p0.md.
+Remote HTTP: run ``easydeploy-ai-mcp-http`` or uvicorn ``easydeploy_ai_mcp.http_main:app``; see README.
 
 If the client lists fewer tools than expected (for example **start_upload** or **get_training_status** missing),
 fully quit and restart the MCP host (Claude Desktop, Cursor, or your connector), confirm the configured
@@ -76,7 +76,7 @@ _parsed_api = urlparse(_BASE_URL)
 if _parsed_api.scheme != "https" or not _parsed_api.netloc:
     raise RuntimeError(
         f"Invalid EDA_API_BASE after normalization: {_BASE_URL!r}. "
-        "Use an HTTPS URL with a hostname (e.g. https://api.easydeploy.ai or sandbox execute-api …/prod)."
+        "Use an HTTPS URL with a hostname (e.g. https://api.easydeploy.ai)."
     )
 _API_KEY: str = os.environ.get("EDA_API_KEY", "")
 _UI_BASE_URL: str = os.environ.get("EDA_UI_BASE_URL", "https://easydeploy.ai").rstrip("/")
