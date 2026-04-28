@@ -218,7 +218,7 @@ Pick exactly one (setting both `EDA_OAUTH_ENABLED` and `MCP_SERVICE_TOKEN` raise
 PORT=9000 ./scripts/run_mcp_docker_local.sh
 ```
 
-**Host on AWS (Fargate + ALB):** build and push this repo’s **Dockerfile** to **ECR**, then deploy your CDK stack **`EasyDeployMcpHost`**. Task env matches **`.env.example`**; pass **`-c certificateArn=…`** for HTTPS (Claude). See **[docs/aws-p0.md](docs/aws-p0.md)**, **[docs/mcp-host-preflight.md](docs/mcp-host-preflight.md)**, and **[docs/claude-remote-connector.md](docs/claude-remote-connector.md)**.
+**Host on AWS (Fargate + ALB):** build and push this repo’s **Dockerfile** to ECR, then deploy behind an ALB with an ACM certificate. Task env vars match **`.env.example`**.
 
 Manual equivalent:
 
@@ -231,13 +231,8 @@ docker run --rm -p 8080:8080 \
 
 ## Documentation
 
-- **[docs/README.md](docs/README.md)** — index of extra guides
 - **[docs/claude-getting-started.md](docs/claude-getting-started.md)** — EasyDeploy + Claude: Connectors or local Desktop config JSON
 - **[docs/claude.md](docs/claude.md)** — Claude Connectors vs Claude Code, transports, headers
-- **[docs/aws-p0.md](docs/aws-p0.md)** — lean AWS deployment and security checklist
-- Your CDK or IaC repo (`EasyDeployMcpHost` stack) — VPC + Fargate + ALB, ECR image (see [docs/aws-p0.md](docs/aws-p0.md))
-- **[docs/mcp-host-preflight.md](docs/mcp-host-preflight.md)** — confirm stack env vs `.env.example` before deploy
-- **[docs/claude-remote-connector.md](docs/claude-remote-connector.md)** — DNS, HTTPS metadata, Claude connector URL
 
 ## REST API reference
 
@@ -254,11 +249,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-**Optional — HTTP MCP smoke (Node 18+):** with `easydeploy-ai-mcp-http` or Docker listening, run `node scripts/smoke-mcp-http.mjs` (same env vars as `scripts/validate_mcp_sandbox.sh`; adds `tools/call` for `get_account_status`). For **full train + ad-hoc prediction** via MCP tools, run `node scripts/smoke-mcp-train-predict.mjs --file <csv>` (see [docs/sandbox-mcp-validation.md](docs/sandbox-mcp-validation.md)).
-
-**Optional — real Cognito JWT against the HTTP app** (live JWKS, no mocks): set `EDA_INTEGRATION_COGNITO_ACCESS_TOKEN` plus the same `EDA_COGNITO_*` vars you use for OAuth mode, then run `pytest tests/test_cognito_jwt_integration.py -v`. See the docstring in that file. Get a token with `scripts/cognito_mcp_get_access_token.py`.
-
-**Shipping remote MCP / Claude:** follow the phased checklist in [docs/e2e-mcp-pre-claude-validation-plan.md](docs/e2e-mcp-pre-claude-validation-plan.md).
+**Optional — real Cognito JWT against the HTTP app** (live JWKS, no mocks): set `EDA_INTEGRATION_COGNITO_ACCESS_TOKEN` plus the same `EDA_COGNITO_*` vars you use for OAuth mode, then run `pytest tests/test_cognito_jwt_integration.py -v`. See the docstring in that file.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and reporting issues.
 

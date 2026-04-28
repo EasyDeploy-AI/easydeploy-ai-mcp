@@ -18,7 +18,7 @@ pytest
 
 You need a valid EasyDeploy **`EDA_API_KEY`** to exercise the live API in manual testing (optionally **`EDA_API_BASE`** if you are not hitting production). The test suite uses mocks where possible.
 
-For **HTTP MCP** end-to-end (including `tools/call`), use **`node scripts/smoke-mcp-http.mjs`** (Node **18+**); for **training + prediction** through MCP tools, use **`node scripts/smoke-mcp-train-predict.mjs --file <csv>`**. Env vars align with `scripts/validate_mcp_sandbox.sh` (see [docs/sandbox-mcp-validation.md](docs/sandbox-mcp-validation.md)). To deploy MCP to AWS (Fargate + ALB), build/push this repo’s Docker image to ECR and deploy your CDK stack (see [docs/aws-p0.md](docs/aws-p0.md)). Preflight: **`scripts/verify_mcp_host_preflight.sh`**.
+For manual **HTTP MCP** end-to-end testing, start the server with `easydeploy-ai-mcp-http` or Docker and exercise the `/mcp` endpoint directly. To deploy, build and push this repo’s **Dockerfile** to a container registry and run behind an HTTPS load balancer.
 
 **pytest** does not load repo **`.env`** by default (`server.py` skips `load_dotenv()` when pytest is active). Export vars in the shell or set **`EDA_FORCE_DOTENV=1`** if you need `.env` during tests.
 

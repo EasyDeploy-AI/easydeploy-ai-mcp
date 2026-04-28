@@ -2,9 +2,7 @@
 
 This guide is for **EasyDeploy AI customers** who want to use **Claude** with the EasyDeploy MCP integration. You need an EasyDeploy account and the connection details your team or EasyDeploy provides.
 
-**Hosting the MCP server on AWS or Docker** (for a shared remote URL) is covered in the [README](../README.md) and [aws-p0.md](aws-p0.md), not here.
-
-**Operators (pre-production):** Before you give users a remote MCP URL or test in Claude, run the phased checklist in [e2e-mcp-pre-claude-validation-plan.md](e2e-mcp-pre-claude-validation-plan.md) (REST API → local MCP → Docker → public HTTPS → Claude).
+**Hosting the MCP server on AWS or Docker** (for a shared remote URL) is covered in the [README](../README.md), not here.
 
 ---
 
@@ -114,5 +112,5 @@ If your plan includes **custom connectors**, use Option A: add a connector and p
 ## More help
 
 - **Connection errors or security questions:** [claude.md](claude.md) (transports, tokens, health checks).
-- **Install or run the HTTP server / Docker / AWS:** [README.md](../README.md), [aws-p0.md](aws-p0.md).
+- **Install or run the HTTP server / Docker / AWS:** [README.md](../README.md).
 
