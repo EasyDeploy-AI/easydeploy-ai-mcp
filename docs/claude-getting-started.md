@@ -8,31 +8,57 @@ This guide is for **EasyDeploy AI customers** who want to use **Claude** with th
 
 ## Before you start
 
-- **EasyDeploy API key:** From the dashboard (**Account → API Keys**). You need this for **Option B** (local MCP on your computer). The MCP client talks to the **production EasyDeploy API** by default—you do **not** set an API base URL for normal use. For **Option A** (remote connector), you usually only use the **Remote MCP URL** your admin gives you.
-- **Remote MCP URL:** For Option A, the HTTPS address for the MCP endpoint (typically ending in `/mcp`). Use the value EasyDeploy or your administrator gives you.
+- **EasyDeploy API key:** From the dashboard (**Account → API Keys**). You need this for **local MCP** on your computer (`claude_desktop_config.json`). The client talks to the **production EasyDeploy API** by default. You do **not** set an API base URL for normal use.
+- **Remote MCP URL:** For the **hosted connector**, use the HTTPS MCP endpoint EasyDeploy provides (for most customers: `https://mcp.easydeploy.ai/mcp`). If you self-host the MCP server, your administrator will give you a different URL.
 
 Claude’s remote MCP requirements (HTTPS, reachability from Anthropic) are described in [Anthropic: custom connectors](https://support.claude.com/en/articles/11503834-building-custom-connectors-via-remote-mcp-servers).
 
-Screenshots for Option A will be added here later.
+Step-by-step screenshots for the hosted flow are on the EasyDeploy site: [easydeploy.ai/claude-mcp](https://www.easydeploy.ai/claude-mcp) (or `/claude-mcp` on your deployment).
 
 ---
 
-## Option A — Remote MCP (Claude Desktop Connectors)
+## Hosted connector (Claude Connectors)
 
-1. Open **Settings** → **Connectors** → **Add custom connector**.
-2. Fill in the form:
-  - **Name:** Any label you like (e.g. `EasyDeploy`).
-  - **Remote MCP Server URL:** Paste the MCP URL you were given (must be `https://…` and include the `/mcp` path if that is how it was provided).
-3. Expand **^ Advanced Settings**:
-  - **OAuth Client ID (optional)** — Leave empty for the hosted connector (`https://mcp.easydeploy.ai/mcp`); your administrator will provide this if you are connecting to a self-hosted instance with a custom Cognito app client.
-  - **OAuth Client Secret (optional)** — Leave empty; the EasyDeploy MCP OAuth client is public (PKCE) and has no secret.
-4. Save the connector, then use Claude as usual. You should see EasyDeploy-related tools when the connection succeeds.
+We host the MCP endpoint. You add it once inside Claude; after you connect and sign in, new chats can use EasyDeploy like any other enabled connector.
+
+1. Open Claude in the browser ([claude.ai](https://claude.ai)) or open **Claude Desktop**.
+2. Open **Settings**, then **Connectors**, and choose **Add custom connector**.
+3. Enter exactly:
+   - **Name:** `EasyDeploy AI`
+   - **Remote MCP server URL:** `https://mcp.easydeploy.ai/mcp` (or the URL your administrator gave you)
+4. Save the connector so EasyDeploy appears in your list of connectors.
+5. Open the EasyDeploy connector entry and choose **Connect**, then finish sign-in in your browser. That step authorizes Claude to use your EasyDeploy account.
+
+### Connect and sign in (inside Claude)
+
+After the custom connector is set up, Claude shows an EasyDeploy card with the MCP URL and a **Connect** button. Use that flow to sign in. You do not paste an API key into Claude. Access stays tied to the EasyDeploy profile you authenticate in the browser.
+
+### Advanced settings (self-hosted or custom Cognito client)
+
+If you are **not** using the default hosted URL above, expand **Advanced settings** in the Add custom connector flow as your administrator directs:
+
+- **OAuth Client ID (optional)** — Leave empty for the hosted connector (`https://mcp.easydeploy.ai/mcp`). Your administrator provides this if you connect to a self-hosted MCP instance with a custom Cognito app client.
+- **OAuth Client Secret (optional)** — Leave empty; the EasyDeploy MCP OAuth client is public (PKCE) and has no secret.
 
 If your setup uses a **bearer token** for the MCP server, your administrator will tell you where to enter it in Claude (wording in the app can change between versions).
 
 ---
 
-## Option B — Local MCP (`claude_desktop_config.json`)
+## Claude Desktop: file uploads and network egress
+
+File uploads and some tool calls reach EasyDeploy over the network. On **Claude Desktop**, outbound traffic is blocked unless you allow the domains Claude should call.
+
+1. Open **Settings → Capabilities**.
+2. Turn on **Allow network egress**.
+3. Under the domain allowlist, add this entry exactly (including the leading `*.`):
+
+   `*.execute-api.us-east-1.amazonaws.com`
+
+The domain allowlist UI is available on **paid** Claude plans.
+
+---
+
+## Local MCP (`claude_desktop_config.json`)
 
 Use this when **Claude Desktop** runs the MCP server **on your computer** (stdio). Nothing is exposed to the internet; you only need your **API key** in the config (production API host is built in).
 
@@ -99,13 +125,13 @@ Use the same `python3` (or `python`) that has `easydeploy-ai-mcp` installed, wit
 
 Fully quit and reopen the app so it reloads the config. You should see **EasyDeploy AI** in your MCP servers and the EasyDeploy tools.
 
-**Note:** Remote MCP URLs belong in **Connectors** (Option A), not in this file.
+**Note:** Remote MCP URLs belong in **Connectors** (hosted connector above), not in this file.
 
 ---
 
 ## Claude on the web (claude.ai)
 
-If your plan includes **custom connectors**, use Option A: add a connector and paste the **Remote MCP Server URL** you were given. Menu labels may differ slightly from Claude Desktop.
+If your plan includes **custom connectors**, use **Hosted connector** above: add a connector and paste the **Remote MCP server URL** you were given. Menu labels may differ slightly from Claude Desktop.
 
 ---
 
@@ -113,4 +139,3 @@ If your plan includes **custom connectors**, use Option A: add a connector and p
 
 - **Connection errors or security questions:** [claude.md](claude.md) (transports, tokens, health checks).
 - **Install or run the HTTP server / Docker / AWS:** [README.md](../README.md).
-

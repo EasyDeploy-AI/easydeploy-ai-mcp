@@ -22,23 +22,31 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that ex
 
 ## Connect with Claude
 
-### Option A — Hosted connector (zero setup)
+### Hosted connector ([claude.ai](https://claude.ai) or Claude Desktop)
 
-The fastest way to use EasyDeploy AI tools in Claude. No installation required.
+We host the MCP endpoint. You add it once inside Claude; after you connect and sign in, new chats can use EasyDeploy like any other enabled connector.
 
-1. Open **Claude** (web at [claude.ai](https://claude.ai) or Claude Desktop).
-2. Go to **Settings → Connectors → Add custom connector**.
-3. Fill in the form:
+1. Open Claude in the browser or open **Claude Desktop**.
+2. Open **Settings**, then **Connectors**, and choose **Add custom connector**.
+3. Enter exactly:
    - **Name:** `EasyDeploy AI`
-   - **URL:** `https://mcp.easydeploy.ai/mcp`
-4. Complete the OAuth sign-in flow when prompted. Claude will redirect you to EasyDeploy to authenticate with your account.
-5. Save the connector. EasyDeploy tools will appear in your Claude sessions.
+   - **Remote MCP server URL:** `https://mcp.easydeploy.ai/mcp`
+4. Save the connector so EasyDeploy appears in your list of connectors.
+5. Open the EasyDeploy connector entry and choose **Connect**, then finish sign-in in your browser. That step authorizes Claude to use your EasyDeploy account.
 
-> **Note:** The hosted connector uses OAuth — you sign in with your EasyDeploy account; no API key needs to be pasted into Claude.
+**Connect and sign in (inside Claude):** After the custom connector is set up, Claude shows an EasyDeploy card with the MCP URL and a **Connect** button. Use that flow to sign in. You do not paste an API key into Claude. Access stays tied to the EasyDeploy profile you authenticate in the browser.
+
+**Claude Desktop and file uploads:** File uploads and some tool calls reach EasyDeploy over the network. On Desktop, Claude blocks outbound traffic unless you allow the domains it should call. Open **Settings → Capabilities**, turn on **Allow network egress**, and under the domain allowlist add this entry exactly (including the leading `*.`):
+
+`*.execute-api.us-east-1.amazonaws.com`
+
+> The domain allowlist UI is available on paid Claude plans.
+
+More detail and variants (for example a URL from your own deployment) are in [docs/claude-getting-started.md](docs/claude-getting-started.md).
 
 ---
 
-### Option B — Self-hosted (local stdio)
+### Local MCP on your computer (stdio)
 
 Run the MCP server on your own machine using your EasyDeploy API key. Nothing is exposed to the internet.
 
