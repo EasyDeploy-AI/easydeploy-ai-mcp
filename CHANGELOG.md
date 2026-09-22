@@ -15,9 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Static DCR** (`POST /oauth/register`, `POST /register`) returns the pre-configured Cognito public client id (RFC 7591-style).
 - **`/authorize`** and **`/token`** proxy endpoints for MCP OAuth broker compatibility.
 - **`scripts/run_mcp_docker_local.sh`** — build the Dockerfile and run the HTTP MCP locally.
+- **Brokered authorization** (`EDA_MCP_OAUTH_BROKER=1`, default off). `/authorize` sends Cognito the server's own `{issuer}/oauth/callback` and seals the client's `redirect_uri` into the OAuth `state`; the new `GET /oauth/callback` forwards the authorization code to that URI with the client's own `state` restored, and `/token` rewrites `redirect_uri` to match. This is what lets clients Cognito cannot allowlist sign in at all — ChatGPT's per-connector `https://chatgpt.com/connector/oauth/<callback_id>`, and the runtime loopback ports Claude Code, Cursor and MCP Inspector bind. Register `{issuer}/oauth/callback` on the Cognito app client before turning it on. See [Brokered authorization](README.md#brokered-authorization).
+- **`oauth_broker` redirect policy** — brokering moves the `redirect_uri` check off Cognito, so the server enforces its own: HTTPS on a known vendor host or subdomain, RFC 8252 §7.3 loopback, and a short private-use scheme allowlist. Extend with `EDA_MCP_EXTRA_REDIRECT_HOSTS`, `EDA_MCP_EXTRA_REDIRECT_SCHEMES`, `EDA_MCP_ALLOW_LOOPBACK_REDIRECT`; seal the state with `EDA_MCP_BROKER_SECRET`.
 
 ### Fixed
 
+- **Browser CORS beyond Claude:** the allowlist now covers ChatGPT (`chatgpt.com`, `chat.openai.com`), VS Code Web and Insiders, Cursor, and a locally run MCP Inspector, alongside the Claude origins. A browser-hosted client whose origin was missing never got to send the request — the preflight failed and the assistant reported that it could not reach the server. Add more with `EDA_CORS_EXTRA_ORIGINS`.
 - **MCP OAuth discovery:** RFC 9728 resource metadata lists the MCP host in `authorization_servers`; the AS metadata proxy ensures every client hits the local endpoints rather than Cognito directly (Cognito's pool issuer does not serve `oauth-authorization-server`).
 - **`api_client`:** REST helpers now consistently accept and forward `caller_channel` to `X-Caller-Channel`.
 

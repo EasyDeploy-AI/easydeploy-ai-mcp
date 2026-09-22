@@ -9,6 +9,8 @@ Routes:
         ``/authorize`` and ``/token`` on this origin; handlers forward to Cognito; Cognito's issuer URL does
         not serve ``oauth-authorization-server`` and returns 400 for strict MCP brokers)
     GET  /authorize — **302** to Cognito ``oauth2/authorize`` with query forwarded (Claude.ai broker quirk; see below)
+    GET  /oauth/callback — broker mode only (``EDA_MCP_OAUTH_BROKER=1``): Cognito lands here and we forward
+        the authorization code to the client's own ``redirect_uri``. See ``oauth_broker`` for why.
     GET/POST /token — reverse-proxy to Cognito ``oauth2/token`` (same quirk; some Claude.ai builds use **GET** with query params per `claude-ai-mcp#82`)
     POST /register — same static DCR as ``/oauth/register`` (brokers often POST issuer-relative ``/register``)
     POST /oauth/register — static RFC 7591-style DCR (returns ``EDA_COGNITO_CLIENT_ID``; Cognito has no real DCR)
@@ -66,6 +68,7 @@ from starlette.routing import Mount, Route
 
 from easydeploy_ai_mcp import auth
 from easydeploy_ai_mcp import oauth_as_metadata
+from easydeploy_ai_mcp import oauth_broker
 from easydeploy_ai_mcp.server import mcp
 
 
@@ -80,6 +83,18 @@ if _OAUTH_ENABLED and _SERVICE_TOKEN:
     )
 
 _OAUTH_CONFIG = auth.load_oauth_config() if _OAUTH_ENABLED else None
+_BROKER_ENABLED = _OAUTH_ENABLED and oauth_broker.is_broker_enabled()
+#: Fixed path Cognito redirects to in broker mode. It has to be on the app
+#: client's callback list, and it is the only entry the list then needs.
+_BROKER_CALLBACK_PATH = "/oauth/callback"
+
+
+def _broker_secret() -> bytes:
+    cfg = _OAUTH_CONFIG
+    return oauth_broker.broker_secret(
+        client_id=cfg.client_id if cfg else "",
+        user_pool_id=cfg.user_pool_id if cfg else "",
+    )
 
 
 def _bearer_from_header(request: Request) -> str:
@@ -113,6 +128,18 @@ def _protected_resource_metadata_url(request: Request) -> str:
         f"{request.url.scheme}://{request.url.netloc}"
         "/.well-known/oauth-protected-resource/mcp"
     )
+
+
+def _broker_callback_url(request: Request) -> str:
+    """The ``redirect_uri`` we hand Cognito in broker mode.
+
+    Built from the advertised issuer rather than the raw request host so it
+    matches the registered callback byte for byte behind the ALB — Cognito
+    compares the authorize and token values literally, and a scheme or host
+    that differs by one character fails the exchange after the user has
+    already signed in.
+    """
+    return f"{_mcp_oauth_issuer(request)}{_BROKER_CALLBACK_PATH}"
 
 
 def _www_authenticate(request: Request, *, error: str = "") -> str:
@@ -250,8 +277,35 @@ def _strip_resource_query_param(query_string: str) -> str:
     return urllib.parse.urlencode(filtered)
 
 
-def _form_body_without_resource(body: bytes, content_type: str | None) -> bytes:
-    """Remove ``resource`` from ``application/x-www-form-urlencoded`` token requests."""
+def _rewrite_token_redirect_uri(
+    pairs: list[tuple[str, str]], broker_callback: str
+) -> list[tuple[str, str]]:
+    """Point ``redirect_uri`` at the broker callback on an authorization_code exchange.
+
+    Cognito checks at ``/oauth2/token`` that ``redirect_uri`` is the one the
+    code was issued against. In broker mode that was ours, but the client
+    sends its own — the value it believes it used — so without this the
+    exchange fails with ``redirect_mismatch`` *after* a successful sign-in,
+    which looks like a broken server rather than a configuration problem.
+
+    Only the authorization_code grant carries a ``redirect_uri``; refresh
+    exchanges are left alone.
+    """
+    if not any(k == "grant_type" and v == "authorization_code" for k, v in pairs):
+        return pairs
+    if not any(k == "redirect_uri" for k, v in pairs):
+        return pairs
+    return [(k, broker_callback if k == "redirect_uri" else v) for k, v in pairs]
+
+
+def _form_body_without_resource(
+    body: bytes, content_type: str | None, broker_callback: str = ""
+) -> bytes:
+    """Strip ``resource`` from a form-encoded token request, and broker the redirect.
+
+    A non-form body (some clients post JSON) is passed through untouched —
+    Cognito rejects it anyway, and guessing at its shape would be worse.
+    """
     ct = (content_type or "").split(";")[0].strip().lower()
     if not body or ct != "application/x-www-form-urlencoded":
         return body
@@ -261,11 +315,49 @@ def _form_body_without_resource(body: bytes, content_type: str | None) -> bytes:
         return body
     pairs = urllib.parse.parse_qsl(text, keep_blank_values=True)
     filtered = [(k, v) for k, v in pairs if k != "resource"]
+    if broker_callback:
+        filtered = _rewrite_token_redirect_uri(filtered, broker_callback)
     return urllib.parse.urlencode(filtered).encode("ascii")
 
 
+def _brokered_authorize_query(request: Request) -> tuple[str, str]:
+    """Swap the client's ``redirect_uri`` for ours and seal the original into ``state``.
+
+    Returns ``(query, error)``; a non-empty ``error`` means the client's
+    callback failed the policy in ``oauth_broker`` and nothing should be sent
+    upstream. PKCE is untouched: ``code_challenge`` travels from the client to
+    Cognito and the verifier comes back on the token call, so brokering the
+    redirect does not weaken the exchange.
+    """
+    pairs = urllib.parse.parse_qsl(
+        _strip_resource_query_param(request.url.query), keep_blank_values=True
+    )
+    client_redirect = next((v for k, v in pairs if k == "redirect_uri"), "")
+    if not client_redirect:
+        # Nothing to broker. Cognito will fall back to its single registered
+        # callback or reject the request itself.
+        return urllib.parse.urlencode(pairs), ""
+    if reason := oauth_broker.redirect_rejection(client_redirect):
+        return "", reason
+
+    client_state = next((v for k, v in pairs if k == "state"), None)
+    sealed = oauth_broker.seal_state(client_redirect, client_state, _broker_secret())
+    rebuilt = [
+        (k, v) for k, v in pairs if k not in ("redirect_uri", "state")
+    ] + [
+        ("redirect_uri", _broker_callback_url(request)),
+        ("state", sealed),
+    ]
+    return urllib.parse.urlencode(rebuilt), ""
+
+
 async def proxy_oauth_authorize(request: Request) -> Response:
-    """Redirect to Cognito authorize URL; query string preserved (Claude.ai /token + /authorize quirk)."""
+    """Redirect to Cognito authorize URL; query string preserved (Claude.ai /token + /authorize quirk).
+
+    In broker mode the query is rewritten first, so Cognito only ever sees our
+    own callback and clients with a runtime or per-connector one stop hitting
+    ``redirect_mismatch``.
+    """
     if _OAUTH_CONFIG is None:
         return JSONResponse({"detail": "OAuth not configured"}, status_code=404)
     try:
@@ -277,8 +369,50 @@ async def proxy_oauth_authorize(request: Request) -> Response:
         return JSONResponse({"detail": "Missing authorization_endpoint"}, status_code=502)
     if not authz.startswith("https://"):
         return JSONResponse({"detail": "Upstream authorization_endpoint is not HTTPS"}, status_code=502)
-    q = _strip_resource_query_param(request.url.query)
+
+    if _BROKER_ENABLED:
+        q, reason = _brokered_authorize_query(request)
+        if reason:
+            # An unapproved callback is answered here rather than redirected
+            # to: sending the error to the URI under suspicion is how an open
+            # redirect is built (RFC 6749 §4.1.2.1).
+            return JSONResponse(
+                {"error": "invalid_request", "error_description": reason},
+                status_code=400,
+            )
+    else:
+        q = _strip_resource_query_param(request.url.query)
+
     target = f"{authz}?{q}" if q else authz
+    return RedirectResponse(url=target, status_code=302)
+
+
+async def oauth_broker_callback(request: Request) -> Response:
+    """Cognito's landing point in broker mode; forwards the result to the client.
+
+    The sealed ``state`` carries the client's callback and its own state.
+    Anything else — a stale link, a state we did not issue, a callback the
+    policy no longer allows — is a dead end rather than a redirect, since the
+    only place left to send the browser would be one we do not trust.
+    """
+    if not _BROKER_ENABLED:
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    params = list(request.query_params.multi_items())
+    state = next((v for k, v in params if k == "state"), "")
+    unsealed = oauth_broker.unseal_state(state, _broker_secret())
+    if unsealed is None:
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": (
+                    "Unrecognized or expired OAuth state. Start the connection again "
+                    "from your MCP client."
+                ),
+            },
+            status_code=400,
+        )
+    client_redirect, client_state = unsealed
+    target = oauth_broker.build_client_redirect(client_redirect, client_state, params)
     return RedirectResponse(url=target, status_code=302)
 
 
@@ -301,15 +435,19 @@ async def proxy_oauth_token(request: Request) -> Response:
     if not token_ep.startswith("https://"):
         return JSONResponse({"detail": "Upstream token_endpoint is not HTTPS"}, status_code=502)
 
+    broker_callback = _broker_callback_url(request) if _BROKER_ENABLED else ""
+
     headers: dict[str, str] = {}
     if request.method == "GET":
         pairs = [(k, v) for k, v in request.query_params.multi_items() if k != "resource"]
+        if broker_callback:
+            pairs = _rewrite_token_redirect_uri(pairs, broker_callback)
         body = urllib.parse.urlencode(pairs).encode("ascii")
         headers["Content-Type"] = "application/x-www-form-urlencoded"
     else:
         raw = await request.body()
         ct_in = request.headers.get("content-type")
-        body = _form_body_without_resource(raw, ct_in)
+        body = _form_body_without_resource(raw, ct_in, broker_callback)
         if ct_in:
             headers["Content-Type"] = ct_in.split(";")[0].strip()
         elif body:
@@ -428,6 +566,10 @@ def _is_open_path(path: str) -> bool:
             return True
         if p == "/token":
             return True
+        # Cognito sends the browser here with no bearer; the gate would turn
+        # the end of a successful sign-in into a 401.
+        if p == _BROKER_CALLBACK_PATH:
+            return True
     return False
 
 
@@ -474,6 +616,13 @@ if _OAUTH_ENABLED:
     )
     _routes.append(
         Route(
+            _BROKER_CALLBACK_PATH,
+            endpoint=oauth_broker_callback,
+            methods=["GET"],
+        )
+    )
+    _routes.append(
+        Route(
             "/oauth/register",
             endpoint=oauth_static_client_registration,
             methods=["POST"],
@@ -498,16 +647,34 @@ if _OAUTH_ENABLED:
 else:
     app.add_middleware(_ServiceTokenMiddleware)
 
-# Outer layer: Claude web may probe the MCP origin from the browser; without
-# CORS, preflight/401 responses are invisible to JS and show as "couldn't reach".
-_CLAUDE_BROWSER_ORIGINS = (
+# Outer layer: browser-hosted clients probe the MCP origin from a page of their
+# own; without CORS, preflight/401 responses are invisible to JS and surface as
+# "couldn't reach the server" with nothing in the network tab to explain it.
+#
+# Every assistant that can add a remote MCP connector from the web belongs here,
+# not only Claude — an origin missing from this tuple fails before the request
+# is even sent, so it looks like an outage rather than a config gap.
+_BROWSER_CLIENT_ORIGINS = (
     "https://claude.ai",
     "https://www.claude.ai",
     "https://claude.com",
     "https://www.claude.com",
+    # ChatGPT custom connectors.
+    "https://chatgpt.com",
+    "https://www.chatgpt.com",
+    "https://chat.openai.com",
+    # VS Code / Insiders for the Web.
+    "https://vscode.dev",
+    "https://insiders.vscode.dev",
+    # Cursor's web surface.
+    "https://cursor.com",
+    "https://www.cursor.com",
+    # MCP Inspector, run locally against a remote server.
+    "http://localhost:6274",
+    "http://127.0.0.1:6274",
 )
 _extra_cors = os.environ.get("EDA_CORS_EXTRA_ORIGINS", "").strip()
-_cors_origins = list(_CLAUDE_BROWSER_ORIGINS)
+_cors_origins = list(_BROWSER_CLIENT_ORIGINS)
 if _extra_cors:
     _cors_origins.extend(o.strip() for o in _extra_cors.split(",") if o.strip())
 

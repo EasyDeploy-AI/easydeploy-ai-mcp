@@ -139,6 +139,12 @@ pip install .
 | `HOST` / `PORT`                    | No       | HTTP bind (defaults `0.0.0.0` / `8080`).                                                        |
 | `EDA_TRUST_FORWARDED_HEADERS`      | No       | Set to `1` behind ALB/reverse proxy so RFC 9728 `resource` uses `https` (trusts `X-Forwarded-Proto`). |
 | `EDA_MCP_OAUTH_ISSUER`             | No       | Public MCP base URL (no path) for `authorization_servers` and proxy `/.well-known/oauth-authorization-server` **`issuer`**. Default: request origin. Use if `Host` / `X-Forwarded-Proto` are wrong behind a proxy. |
+| `EDA_CORS_EXTRA_ORIGINS`           | No       | Comma-separated browser origins to allow in addition to the built-in list (Claude, ChatGPT, VS Code Web, Cursor, MCP Inspector). |
+| `EDA_MCP_OAUTH_BROKER`             | No       | Set to `1` to broker the authorization redirect. Default off. See [Brokered authorization](#brokered-authorization). |
+| `EDA_MCP_EXTRA_REDIRECT_HOSTS`     | No       | Broker mode: comma-separated extra HTTPS hosts accepted as client `redirect_uri` (subdomains included). |
+| `EDA_MCP_EXTRA_REDIRECT_SCHEMES`   | No       | Broker mode: comma-separated extra private-use URI schemes (RFC 8252 §7.1) accepted as client `redirect_uri`. |
+| `EDA_MCP_ALLOW_LOOPBACK_REDIRECT`  | No       | Broker mode: set to `0` to refuse `http://127.0.0.1:<port>` callbacks. Default `1` — desktop clients need them. |
+| `EDA_MCP_BROKER_SECRET`            | No       | Broker mode: HMAC key that seals the OAuth `state`. Defaults to a value derived from the Cognito pool and client ids. |
 
 
 ## Local MCP (stdio)
@@ -202,6 +208,45 @@ Pick exactly one (setting both `EDA_OAUTH_ENABLED` and `MCP_SERVICE_TOKEN` raise
 - **Shared-secret gate** (legacy single-tenant): set `MCP_SERVICE_TOKEN`. All
   outbound API calls use the static `EDA_API_KEY`.
 - **No auth**: development only.
+
+### Brokered authorization
+
+Cognito matches `redirect_uri` **literally** against the app client's callback
+list — no wildcards, no prefixes, no ports — and it checks at
+`/oauth2/authorize`, *before* rendering the Hosted UI. A client whose callback
+is not registered therefore never sees a sign-in page: the browser lands on
+`redirect_mismatch`, which reads as "the connector could not load the login
+page" rather than as a configuration problem.
+
+That works for clients with one fixed callback and cannot work for the rest:
+
+| Client | Callback | Registrable? |
+| --- | --- | --- |
+| Claude (web, Desktop) | `https://claude.ai/api/mcp/auth_callback` | yes |
+| ChatGPT custom connector | `https://chatgpt.com/connector_platform_oauth_redirect`, or `https://chatgpt.com/connector/oauth/<callback_id>` when it cannot identify the issuer | the first only |
+| VS Code / Insiders | `https://vscode.dev/redirect` | yes |
+| Claude Code, Cursor, MCP Inspector | `http://127.0.0.1:<port chosen at runtime>/callback` | no |
+
+Set `EDA_MCP_OAUTH_BROKER=1` and the server sends Cognito **its own** callback,
+`{issuer}/oauth/callback`, which is one fixed URL you register once. It seals
+the client's real `redirect_uri` into the OAuth `state`, and when Cognito comes
+back it forwards the authorization code to that URI with the client's own
+`state` restored. `/token` rewrites `redirect_uri` to match, because Cognito
+checks it a second time at the token exchange. PKCE is untouched — the
+`code_challenge` travels to Cognito and the verifier comes back from the
+client, so the exchange is still bound to whoever started it.
+
+**This moves the redirect check from Cognito to this server, so it stays a real
+check.** Without one, anybody could start a flow here with a callback they
+control and collect a signed-in user's authorization code. `oauth_broker.py`
+accepts an HTTPS callback only on a known vendor host (or a subdomain of one),
+loopback per RFC 8252 §7.3, and a private-use scheme from a short allowlist.
+Extend it with `EDA_MCP_EXTRA_REDIRECT_HOSTS` / `EDA_MCP_EXTRA_REDIRECT_SCHEMES`
+rather than by widening the code.
+
+**Rollout order matters.** Register `{issuer}/oauth/callback` on the Cognito app
+client *first*, then set `EDA_MCP_OAUTH_BROKER=1`. Doing it the other way round
+breaks the clients that work today, which is why the default is off.
 
 **Docker — run locally** (same image you deploy to ECS/Fargate; includes `easydeploy-ai-mcp[oauth]`):
 
