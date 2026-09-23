@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Brokered OAuth requires PKCE.** In broker mode `/authorize` refuses a request without `code_challenge_method=S256`. Cognito treats PKCE as optional and the broker's `/token` rewrite removes Cognito's own `redirect_uri` check, so a flow without it would leave a leaked code redeemable by anyone.
+- **Broker redirect policy matches hosts exactly and pins known callback paths.** Subdomains of vendor hosts are no longer implied (`EDA_MCP_EXTRA_REDIRECT_HOSTS` takes `.host` to opt in), `openai.com` is narrowed to `chat.openai.com/aip/`, and URIs with dot segments, backslashes, whitespace or non-ASCII are refused so the policy and the browser cannot disagree about where a redirect goes.
+- The server logs a warning when brokering without `EDA_MCP_BROKER_SECRET`; the fallback key is derived from public identifiers.
+
 ### Added
 
 - **OAuth 2.0 resource-server mode** for the HTTP transport. Set `EDA_OAUTH_ENABLED=1` with `EDA_COGNITO_USER_POOL_ID` and `EDA_COGNITO_CLIENT_ID` to validate incoming `Authorization: Bearer <jwt>` headers locally against the Cognito JWKS and forward the user's token to the EasyDeploy API. EasyDeploy API keys (`eda_live_*`) are accepted in the same header and forwarded verbatim.

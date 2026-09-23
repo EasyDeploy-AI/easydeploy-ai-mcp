@@ -141,10 +141,10 @@ pip install .
 | `EDA_MCP_OAUTH_ISSUER`             | No       | Public MCP base URL (no path) for `authorization_servers` and proxy `/.well-known/oauth-authorization-server` **`issuer`**. Default: request origin. Use if `Host` / `X-Forwarded-Proto` are wrong behind a proxy. |
 | `EDA_CORS_EXTRA_ORIGINS`           | No       | Comma-separated browser origins to allow in addition to the built-in list (Claude, ChatGPT, VS Code Web, Cursor, MCP Inspector). |
 | `EDA_MCP_OAUTH_BROKER`             | No       | Set to `1` to broker the authorization redirect. Default off. See [Brokered authorization](#brokered-authorization). |
-| `EDA_MCP_EXTRA_REDIRECT_HOSTS`     | No       | Broker mode: comma-separated extra HTTPS hosts accepted as client `redirect_uri` (subdomains included). |
+| `EDA_MCP_EXTRA_REDIRECT_HOSTS`     | No       | Broker mode: comma-separated extra HTTPS callbacks accepted as client `redirect_uri`. `host` (any path), `host/path` (exact), `host/path/` (prefix), `.host` (host and subdomains). |
 | `EDA_MCP_EXTRA_REDIRECT_SCHEMES`   | No       | Broker mode: comma-separated extra private-use URI schemes (RFC 8252 §7.1) accepted as client `redirect_uri`. |
 | `EDA_MCP_ALLOW_LOOPBACK_REDIRECT`  | No       | Broker mode: set to `0` to refuse `http://127.0.0.1:<port>` callbacks. Default `1` — desktop clients need them. |
-| `EDA_MCP_BROKER_SECRET`            | No       | Broker mode: HMAC key that seals the OAuth `state`. Defaults to a value derived from the Cognito pool and client ids. |
+| `EDA_MCP_BROKER_SECRET`            | No       | Broker mode: HMAC key that seals the OAuth `state`. Set it in any real deployment; the fallback is derived from the Cognito pool and client ids, which are public, and the server logs a warning without it. |
 
 
 ## Local MCP (stdio)
@@ -232,17 +232,26 @@ Set `EDA_MCP_OAUTH_BROKER=1` and the server sends Cognito **its own** callback,
 the client's real `redirect_uri` into the OAuth `state`, and when Cognito comes
 back it forwards the authorization code to that URI with the client's own
 `state` restored. `/token` rewrites `redirect_uri` to match, because Cognito
-checks it a second time at the token exchange. PKCE is untouched — the
-`code_challenge` travels to Cognito and the verifier comes back from the
-client, so the exchange is still bound to whoever started it.
+checks it a second time at the token exchange.
 
 **This moves the redirect check from Cognito to this server, so it stays a real
 check.** Without one, anybody could start a flow here with a callback they
 control and collect a signed-in user's authorization code. `oauth_broker.py`
-accepts an HTTPS callback only on a known vendor host (or a subdomain of one),
-loopback per RFC 8252 §7.3, and a private-use scheme from a short allowlist.
-Extend it with `EDA_MCP_EXTRA_REDIRECT_HOSTS` / `EDA_MCP_EXTRA_REDIRECT_SCHEMES`
-rather than by widening the code.
+is about as tight as the list it replaces: an HTTPS callback must match a known
+client's host exactly and, where that client's callback path is known, the path
+too (`claude.ai/api/mcp/auth_callback`, `chatgpt.com/connector/oauth/…`,
+`vscode.dev/redirect`). Subdomains are never implied — one open redirect or
+dangling CNAME under a vendor's domain would otherwise be a place to collect
+codes. Loopback is accepted per RFC 8252 §7.3, and private-use schemes from a
+short allowlist. Extend it with `EDA_MCP_EXTRA_REDIRECT_HOSTS` /
+`EDA_MCP_EXTRA_REDIRECT_SCHEMES` rather than by widening the code.
+
+**PKCE is mandatory in broker mode.** Cognito treats `code_challenge` as
+optional, and the broker's `/token` rewrite removes the one check Cognito made
+there, so a flow without PKCE would leave the code bound to nothing — anyone
+who found it in a browser history or a proxy log could redeem it. `/authorize`
+refuses a brokered request without `code_challenge_method=S256`. Every MCP
+client already sends one.
 
 **Rollout order matters.** Register `{issuer}/oauth/callback` on the Cognito app
 client *first*, then set `EDA_MCP_OAUTH_BROKER=1`. Doing it the other way round

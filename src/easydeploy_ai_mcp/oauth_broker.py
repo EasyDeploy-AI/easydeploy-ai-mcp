@@ -24,9 +24,13 @@ Doing that moves the redirect check from Cognito to us, and it has to stay a
 real check. An open ``redirect_uri`` would let anyone start a flow at our
 ``/authorize`` with a callback they control, wait for a signed-in user to be
 sent through it, and collect the authorization code — with a PKCE verifier
-they chose themselves, so the code is redeemable. This module is that check:
-a host allowlist for HTTPS, RFC 8252 loopback for native clients, and a
-scheme allowlist for private-use URIs.
+they chose themselves, so the code is redeemable. This module is that check,
+and it is deliberately about as tight as the list it replaces: an HTTPS
+callback must match a known client's host **exactly** and, where the client's
+callback path is known, that path too. Subdomains are opt-in per host, because
+one open redirect or dangling CNAME anywhere under a vendor's domain would
+otherwise be a place to collect codes. Loopback is accepted for native clients
+per RFC 8252, and private-use schemes from a short allowlist.
 
 The state is sealed on top of that. Sealing is not what keeps the redirect
 honest — an attacker can always ask ``/authorize`` to seal a state for them,
@@ -37,7 +41,8 @@ crafted link swapped in. The callback re-runs the policy anyway.
 
 Configuration:
     EDA_MCP_OAUTH_BROKER              ``1`` to broker (default off; see http_main)
-    EDA_MCP_EXTRA_REDIRECT_HOSTS      comma-separated extra HTTPS hosts
+    EDA_MCP_EXTRA_REDIRECT_HOSTS      comma-separated extra HTTPS callback rules
+                                      (see ``parse_redirect_rule``)
     EDA_MCP_EXTRA_REDIRECT_SCHEMES    comma-separated extra private-use schemes
     EDA_MCP_ALLOW_LOOPBACK_REDIRECT   ``0`` to refuse loopback callbacks
     EDA_MCP_BROKER_SECRET             HMAC key for sealed state
@@ -52,25 +57,57 @@ import ipaddress
 import json
 import os
 import urllib.parse
+from dataclasses import dataclass
 
-#: HTTPS callbacks are accepted on these hosts and their subdomains. Each is a
-#: registrable domain owned by the client's vendor, which is as tight as this
-#: can be while still covering per-connector paths we cannot enumerate.
-DEFAULT_REDIRECT_HOSTS: tuple[str, ...] = (
+
+@dataclass(frozen=True)
+class RedirectRule:
+    """One accepted HTTPS callback shape.
+
+    ``host`` matches exactly unless ``subdomains`` is set, in which case it
+    also covers ``*.host`` (never a bare suffix: ``evilclaude.ai`` is not under
+    ``claude.ai``). ``path`` is ``None`` for any path, an exact path, or a
+    prefix when it ends in ``/``.
+    """
+
+    host: str
+    path: str | None = None
+    subdomains: bool = False
+
+    def matches(self, host: str, path: str) -> bool:
+        if host != self.host and not (
+            self.subdomains and host.endswith("." + self.host)
+        ):
+            return False
+        if self.path is None:
+            return True
+        if self.path.endswith("/"):
+            return path.startswith(self.path)
+        return path == self.path
+
+
+#: HTTPS callbacks are accepted only when they match one of these. Each is a
+#: callback a real client is known to use; the path is pinned wherever the
+#: client documents one, and left open only where it does not.
+DEFAULT_REDIRECT_RULES: tuple[RedirectRule, ...] = (
     # Claude web, Claude Desktop.
-    "claude.ai",
-    "claude.com",
-    # ChatGPT custom connectors: the documented callback and the per-connector
-    # fallback (https://chatgpt.com/connector/oauth/<callback_id>).
-    "chatgpt.com",
-    "openai.com",
+    RedirectRule("claude.ai", "/api/mcp/auth_callback"),
+    RedirectRule("claude.com", "/api/mcp/auth_callback"),
+    # ChatGPT custom connectors: the documented callback, and the
+    # per-connector fallback whose id is minted at connector creation.
+    RedirectRule("chatgpt.com", "/connector_platform_oauth_redirect"),
+    RedirectRule("chatgpt.com", "/connector/oauth/"),
+    # ChatGPT GPT actions.
+    RedirectRule("chat.openai.com", "/aip/"),
     # VS Code and Insiders bounce through their own redirect service.
-    "vscode.dev",
-    # Cursor's hosted callback.
-    "cursor.com",
-    "cursor.sh",
+    RedirectRule("vscode.dev", "/redirect"),
+    RedirectRule("insiders.vscode.dev", "/redirect"),
+    # Cursor's hosted callback; the path is not documented.
+    RedirectRule("cursor.com"),
+    RedirectRule("cursor.sh"),
     # Our own console, for a first-party connect button.
-    "easydeploy.ai",
+    RedirectRule("easydeploy.ai"),
+    RedirectRule("www.easydeploy.ai"),
 )
 
 #: Private-use URI schemes (RFC 8252 §7.1) registered by desktop clients.
@@ -84,6 +121,10 @@ DEFAULT_REDIRECT_SCHEMES: tuple[str, ...] = (
 
 #: RFC 8252 §7.3 loopback. Not ``0.0.0.0`` — that is not a loopback address.
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+#: A path segment a browser would collapse before resolving. WHATWG URL
+#: parsing treats ``%2e`` as ``.`` here, so the encoded spellings count too.
+_DOT_SEGMENTS = frozenset({".", "..", "%2e", "%2e.", ".%2e", "%2e%2e"})
 
 _STATE_VERSION = "v1"
 
@@ -111,9 +152,32 @@ def is_broker_enabled() -> bool:
     return _env_flag("EDA_MCP_OAUTH_BROKER", False)
 
 
-def allowed_redirect_hosts() -> tuple[str, ...]:
-    return DEFAULT_REDIRECT_HOSTS + tuple(
-        h.lower().lstrip(".") for h in _env_list("EDA_MCP_EXTRA_REDIRECT_HOSTS")
+def parse_redirect_rule(spec: str) -> RedirectRule:
+    """One ``EDA_MCP_EXTRA_REDIRECT_HOSTS`` entry.
+
+    ``partner.example``          that host, any path
+    ``partner.example/cb``       that host, that exact path
+    ``partner.example/cb/``      that host, any path under ``/cb/``
+    ``.partner.example``         that host and its subdomains
+
+    Subdomains take the leading dot on purpose: every extra rule is a place a
+    signed-in user's code may be sent, and widening one to a whole domain
+    should be a choice rather than the default.
+    """
+    spec = spec.strip()
+    subdomains = spec.startswith(".")
+    spec = spec.lstrip(".")
+    host, sep, path = spec.partition("/")
+    return RedirectRule(
+        host=host.lower(),
+        path=f"/{path}" if sep else None,
+        subdomains=subdomains,
+    )
+
+
+def allowed_redirect_rules() -> tuple[RedirectRule, ...]:
+    return DEFAULT_REDIRECT_RULES + tuple(
+        parse_redirect_rule(spec) for spec in _env_list("EDA_MCP_EXTRA_REDIRECT_HOSTS")
     )
 
 
@@ -128,15 +192,6 @@ def loopback_allowed() -> bool:
     return _env_flag("EDA_MCP_ALLOW_LOOPBACK_REDIRECT", True)
 
 
-def _host_matches(host: str, allowed: str) -> bool:
-    """``allowed`` covers itself and its subdomains, never a suffix match.
-
-    ``evilclaude.ai`` must not pass for ``claude.ai``, so the subdomain arm
-    tests against ``"." + allowed`` rather than the bare string.
-    """
-    return host == allowed or host.endswith("." + allowed)
-
-
 def _is_loopback_host(host: str) -> bool:
     if host in _LOOPBACK_HOSTS:
         return True
@@ -144,6 +199,10 @@ def _is_loopback_host(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _has_dot_segment(path: str) -> bool:
+    return any(segment.lower() in _DOT_SEGMENTS for segment in path.split("/"))
 
 
 def redirect_rejection(uri: str) -> str:
@@ -155,6 +214,12 @@ def redirect_rejection(uri: str) -> str:
     """
     if not uri:
         return "redirect_uri is required"
+    # RFC 3986 URIs are printable ASCII. Anything else is either malformed or
+    # an attempt to make our parser and the browser's disagree about where
+    # the redirect goes — a backslash, for one, is ``/`` to a browser and an
+    # ordinary userinfo character to urllib.
+    if not uri.isascii() or not uri.isprintable() or " " in uri or "\\" in uri:
+        return "redirect_uri contains characters that are not allowed in a URI"
     try:
         parsed = urllib.parse.urlparse(uri)
     except ValueError:
@@ -179,8 +244,15 @@ def redirect_rejection(uri: str) -> str:
     if scheme == "https":
         if not host:
             return "https redirect_uri must have a host"
-        if any(_host_matches(host, allowed) for allowed in allowed_redirect_hosts()):
+        path = parsed.path or "/"
+        if _has_dot_segment(path):
+            # ``/connector/oauth/../../x`` would pass a prefix rule here and
+            # resolve somewhere else in the browser.
+            return "redirect_uri path must not contain dot segments"
+        if any(rule.matches(host, path) for rule in allowed_redirect_rules()):
             return ""
+        if any(rule.host == host for rule in allowed_redirect_rules()):
+            return f"path {path!r} is not an allowed callback path on {host!r}"
         return f"host {host!r} is not an allowed redirect host"
 
     if scheme in allowed_redirect_schemes():
@@ -191,6 +263,24 @@ def redirect_rejection(uri: str) -> str:
 
 def is_allowed_redirect(uri: str) -> bool:
     return redirect_rejection(uri) == ""
+
+
+def pkce_rejection(code_challenge: str, code_challenge_method: str) -> str:
+    """Why an authorize request's PKCE parameters are not acceptable; empty if they are.
+
+    Cognito treats ``code_challenge`` as optional, and the broker rewrites
+    ``redirect_uri`` at the token exchange, so a flow without PKCE would leave
+    the authorization code bound to nothing: whoever picked it out of a
+    browser history or a proxy log could redeem it. Every MCP client is
+    required to use PKCE anyway, so insisting costs nothing. Only S256 —
+    Cognito accepts nothing else, and ``plain`` would put the verifier in the
+    authorize URL.
+    """
+    if not code_challenge:
+        return "code_challenge is required (PKCE, RFC 7636)"
+    if code_challenge_method != "S256":
+        return "code_challenge_method must be S256"
+    return ""
 
 
 def _b64url(raw: bytes) -> str:
@@ -208,12 +298,21 @@ def broker_secret(*, client_id: str = "", user_pool_id: str = "") -> bytes:
     identifiers, which are already in the task environment and are identical
     on every task in a stage — a random per-process key would invalidate any
     login that straddled a deploy or a second replica.
+
+    Both identifiers are public (``/oauth/register`` hands out the client id),
+    so the derived key is tamper-evidence against a middlebox, not against an
+    adversary. That is enough only because the callback re-runs the redirect
+    policy; set the explicit secret in any real deployment.
     """
     explicit = os.environ.get("EDA_MCP_BROKER_SECRET", "").strip()
     if explicit:
         return explicit.encode("utf-8")
     seed = f"easydeploy-mcp-broker:{user_pool_id}:{client_id}"
     return hashlib.sha256(seed.encode("utf-8")).digest()
+
+
+def has_explicit_secret() -> bool:
+    return bool(os.environ.get("EDA_MCP_BROKER_SECRET", "").strip())
 
 
 def _sign(payload: str, secret: bytes) -> str:
