@@ -54,6 +54,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import os
 import time
 import urllib.parse
@@ -87,6 +88,14 @@ _BROKER_ENABLED = _OAUTH_ENABLED and oauth_broker.is_broker_enabled()
 #: Fixed path Cognito redirects to in broker mode. It has to be on the app
 #: client's callback list, and it is the only entry the list then needs.
 _BROKER_CALLBACK_PATH = "/oauth/callback"
+if _BROKER_ENABLED and not oauth_broker.has_explicit_secret():
+    # The fallback key is derived from the pool and client ids, both public.
+    # The callback re-checks the redirect policy so a forged state gains
+    # nothing today, but that is one refactor away from not being true.
+    logging.getLogger(__name__).warning(
+        "EDA_MCP_OAUTH_BROKER=1 without EDA_MCP_BROKER_SECRET: sealed OAuth state "
+        "is signed with a key derived from public identifiers. Set the secret."
+    )
 
 
 def _broker_secret() -> bytes:
@@ -323,11 +332,11 @@ def _form_body_without_resource(
 def _brokered_authorize_query(request: Request) -> tuple[str, str]:
     """Swap the client's ``redirect_uri`` for ours and seal the original into ``state``.
 
-    Returns ``(query, error)``; a non-empty ``error`` means the client's
-    callback failed the policy in ``oauth_broker`` and nothing should be sent
-    upstream. PKCE is untouched: ``code_challenge`` travels from the client to
-    Cognito and the verifier comes back on the token call, so brokering the
-    redirect does not weaken the exchange.
+    Returns ``(query, error)``; a non-empty ``error`` means the request failed
+    a policy in ``oauth_broker`` — the callback, or missing PKCE — and nothing
+    should be sent upstream. ``code_challenge`` itself travels to Cognito
+    untouched and the verifier comes back on the token call, so the exchange
+    stays bound to whoever started the flow.
     """
     pairs = urllib.parse.parse_qsl(
         _strip_resource_query_param(request.url.query), keep_blank_values=True
@@ -338,6 +347,14 @@ def _brokered_authorize_query(request: Request) -> tuple[str, str]:
         # callback or reject the request itself.
         return urllib.parse.urlencode(pairs), ""
     if reason := oauth_broker.redirect_rejection(client_redirect):
+        return "", reason
+    # Brokering rewrites redirect_uri at /token too, which removes the one
+    # check Cognito made there. PKCE is what binds the code to the client
+    # that started the flow, so in broker mode it is not optional.
+    if reason := oauth_broker.pkce_rejection(
+        next((v for k, v in pairs if k == "code_challenge"), ""),
+        next((v for k, v in pairs if k == "code_challenge_method"), ""),
+    ):
         return "", reason
 
     client_state = next((v for k, v in pairs if k == "state"), None)

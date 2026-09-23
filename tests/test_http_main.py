@@ -175,6 +175,54 @@ def test_broker_refuses_a_callback_it_does_not_trust(oauth_app):
     assert "location" not in r.headers
 
 
+@pytest.mark.parametrize(
+    "pkce",
+    [
+        {},
+        {"code_challenge": "chal"},
+        {"code_challenge": "chal", "code_challenge_method": "plain"},
+    ],
+    ids=["none", "no-method", "plain"],
+)
+def test_broker_refuses_a_flow_without_s256_pkce(oauth_app, pkce):
+    """Cognito treats PKCE as optional, and /token no longer checks the
+    client's redirect_uri in broker mode, so without PKCE a leaked code would
+    be redeemable by anyone. Refused here, before Cognito sees it."""
+    with TestClient(oauth_app.app) as client:
+        r = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "testclientid",
+                "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                "state": "client-state",
+                **pkce,
+            },
+            follow_redirects=False,
+        )
+    assert r.status_code == 400
+    assert r.json()["error"] == "invalid_request"
+    assert "code_challenge" in r.json()["error_description"]
+    assert "location" not in r.headers
+
+
+@pytest.mark.parametrize("oauth_app", [False], indirect=True)
+def test_pkce_is_cognitos_business_when_not_brokering(oauth_app):
+    """Pass-through mode leaves Cognito's own redirect_uri check in place."""
+    with TestClient(oauth_app.app) as client:
+        r = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "testclientid",
+                "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                "state": "client-state",
+            },
+            follow_redirects=False,
+        )
+    assert r.status_code == 302
+
+
 def test_broker_hands_the_code_back_to_the_client(oauth_app):
     with TestClient(oauth_app.app) as client:
         authorized = _authorize_query(client, "http://127.0.0.1:51793/callback")

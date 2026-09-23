@@ -67,15 +67,101 @@ def test_rejection_names_the_rule_that_was_tripped():
     assert "redirect host" in reason
 
 
-def test_subdomains_of_an_allowed_host_are_allowed():
-    assert oauth_broker.is_allowed_redirect("https://api.claude.ai/cb")
+@pytest.mark.parametrize(
+    "uri",
+    [
+        # Any subdomain of a vendor is one open redirect or dangling CNAME
+        # away from being a place to collect codes; hosts match exactly.
+        "https://api.claude.ai/api/mcp/auth_callback",
+        "https://sub.deep.openai.com/anything",
+        "https://anything.easydeploy.ai/whatever",
+        # The path is pinned where the client's callback is known.
+        "https://claude.ai/anything",
+        "https://claude.ai/api/mcp/auth_callback/extra",
+        "https://chatgpt.com/other",
+        "https://vscode.dev/redirect/../evil",
+        "https://claude.ai",
+    ],
+)
+def test_refuses_hosts_and_paths_no_real_client_uses(uri):
+    assert oauth_broker.redirect_rejection(uri) != ""
+
+
+def test_rejection_names_the_path_when_the_host_is_known():
+    reason = oauth_broker.redirect_rejection("https://claude.ai/anything")
+    assert "callback path" in reason
+    assert "claude.ai" in reason
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        # A browser collapses these before resolving, so a prefix rule
+        # would approve one place and the code would land in another.
+        "https://chatgpt.com/connector/oauth/../../evil",
+        "https://chatgpt.com/connector/oauth/%2e%2e/%2e%2e/evil",
+        "https://chatgpt.com/connector/oauth/.%2E/evil",
+        # A backslash is ``/`` to a browser and userinfo to urllib: this
+        # parses as host claude.ai here and goes to evil.com in Chrome.
+        "https://evil.com\\@claude.ai/api/mcp/auth_callback",
+        # Whitespace and non-ASCII have no place in a URI.
+        "https://claude.ai/api/mcp/auth_callback ",
+        "https://claude.ai/api/mcp/auth_cаllback",  # Cyrillic а
+        "https://claude.ai/api/mcp/auth_callback\x00",
+    ],
+)
+def test_refuses_uris_a_browser_would_read_differently(uri):
+    assert oauth_broker.redirect_rejection(uri) != ""
+
+
+@pytest.mark.parametrize(
+    ("spec", "rule"),
+    [
+        ("partner.example", oauth_broker.RedirectRule("partner.example")),
+        ("partner.example/cb", oauth_broker.RedirectRule("partner.example", "/cb")),
+        ("partner.example/cb/", oauth_broker.RedirectRule("partner.example", "/cb/")),
+        (".partner.example", oauth_broker.RedirectRule("partner.example", subdomains=True)),
+        (" Partner.Example ", oauth_broker.RedirectRule("partner.example")),
+    ],
+)
+def test_extra_rule_syntax(spec, rule):
+    assert oauth_broker.parse_redirect_rule(spec) == rule
 
 
 def test_extra_hosts_come_from_the_environment(monkeypatch):
     assert not oauth_broker.is_allowed_redirect("https://partner.example/cb")
-    monkeypatch.setenv("EDA_MCP_EXTRA_REDIRECT_HOSTS", "partner.example, other.example")
-    assert oauth_broker.is_allowed_redirect("https://partner.example/cb")
-    assert oauth_broker.is_allowed_redirect("https://deep.other.example/cb")
+    monkeypatch.setenv(
+        "EDA_MCP_EXTRA_REDIRECT_HOSTS",
+        "partner.example, pinned.example/cb, tree.example/cb/, .wide.example",
+    )
+    # Bare host: any path, that host only.
+    assert oauth_broker.is_allowed_redirect("https://partner.example/anything")
+    assert not oauth_broker.is_allowed_redirect("https://deep.partner.example/cb")
+    # Exact path.
+    assert oauth_broker.is_allowed_redirect("https://pinned.example/cb")
+    assert not oauth_broker.is_allowed_redirect("https://pinned.example/cb/x")
+    # Prefix.
+    assert oauth_broker.is_allowed_redirect("https://tree.example/cb/x/y")
+    assert not oauth_broker.is_allowed_redirect("https://tree.example/other")
+    # Subdomains only with the leading dot, and still never a bare suffix.
+    assert oauth_broker.is_allowed_redirect("https://deep.wide.example/cb")
+    assert oauth_broker.is_allowed_redirect("https://wide.example/cb")
+    assert not oauth_broker.is_allowed_redirect("https://notwide.example/cb")
+
+
+@pytest.mark.parametrize(
+    ("challenge", "method", "ok"),
+    [
+        ("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "S256", True),
+        ("", "S256", False),
+        ("", "", False),
+        ("verifier-in-the-clear", "plain", False),
+        ("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "", False),
+        ("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "s256", False),
+    ],
+)
+def test_pkce_is_required_and_must_be_s256(challenge, method, ok):
+    assert (oauth_broker.pkce_rejection(challenge, method) == "") is ok
 
 
 def test_extra_schemes_come_from_the_environment(monkeypatch):
@@ -112,17 +198,17 @@ def test_seal_round_trips_the_client_redirect_and_state():
 
 
 def test_seal_round_trips_when_the_client_sent_no_state():
-    sealed = oauth_broker.seal_state("https://claude.ai/cb", None, SECRET)
-    assert oauth_broker.unseal_state(sealed, SECRET) == ("https://claude.ai/cb", None)
+    sealed = oauth_broker.seal_state("https://claude.ai/api/mcp/auth_callback", None, SECRET)
+    assert oauth_broker.unseal_state(sealed, SECRET) == ("https://claude.ai/api/mcp/auth_callback", None)
 
 
 def test_sealed_state_is_url_safe():
-    sealed = oauth_broker.seal_state("https://claude.ai/cb", "a b/c+d", SECRET)
+    sealed = oauth_broker.seal_state("https://claude.ai/api/mcp/auth_callback", "a b/c+d", SECRET)
     assert urllib.parse.quote(sealed, safe="") == sealed
 
 
 def test_tampered_state_does_not_unseal():
-    sealed = oauth_broker.seal_state("https://claude.ai/cb", "s", SECRET)
+    sealed = oauth_broker.seal_state("https://claude.ai/api/mcp/auth_callback", "s", SECRET)
     version, payload, signature = sealed.split(".")
     swapped = oauth_broker.seal_state("https://chatgpt.com/cb", "s", SECRET)
     # Somebody else's payload with this state's signature.
@@ -139,7 +225,7 @@ def test_malformed_state_does_not_unseal(state):
 
 
 def test_state_sealed_with_another_key_does_not_unseal():
-    sealed = oauth_broker.seal_state("https://claude.ai/cb", "s", SECRET)
+    sealed = oauth_broker.seal_state("https://claude.ai/api/mcp/auth_callback", "s", SECRET)
     assert oauth_broker.unseal_state(sealed, b"different-secret") is None
 
 
@@ -178,7 +264,7 @@ def test_client_redirect_carries_the_code_and_the_client_state():
 
 def test_client_redirect_forwards_an_upstream_error():
     target = oauth_broker.build_client_redirect(
-        "https://claude.ai/cb",
+        "https://claude.ai/api/mcp/auth_callback",
         "s",
         [("error", "access_denied"), ("error_description", "User cancelled")],
     )
@@ -189,7 +275,7 @@ def test_client_redirect_forwards_an_upstream_error():
 
 def test_client_redirect_omits_state_when_the_client_sent_none():
     target = oauth_broker.build_client_redirect(
-        "https://claude.ai/cb", None, [("code", "c"), ("state", "ours")]
+        "https://claude.ai/api/mcp/auth_callback", None, [("code", "c"), ("state", "ours")]
     )
     assert "state" not in dict(
         urllib.parse.parse_qsl(urllib.parse.urlparse(target).query)
