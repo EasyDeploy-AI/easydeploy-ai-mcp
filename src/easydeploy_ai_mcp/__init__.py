@@ -4,4 +4,4 @@ from easydeploy_ai_mcp.server import EDA_MCP_TOOL_NAMES, mcp
 
 __all__ = ["mcp", "EDA_MCP_TOOL_NAMES", "__version__"]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

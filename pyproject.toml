@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easydeploy-ai-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "EasyDeploy AI MCP server — REST API tools for Claude and other MCP clients"
 readme = "README.md"
 requires-python = ">=3.10"

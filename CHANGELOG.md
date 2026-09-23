@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-23
+
+The HTTP transport gains OAuth: MCP clients sign in through Cognito instead of
+carrying a shared token, and a brokered redirect lets clients Cognito cannot
+allowlist — ChatGPT connectors, Claude Code, Cursor, MCP Inspector — sign in at
+all. stdio users are unaffected beyond the `caller_channel` fix.
+
 ### Security
 
+- `MCP_SERVICE_TOKEN` comparison uses `hmac.compare_digest` (constant-time).
+- Explicit `verify=True` on all outbound `httpx` clients.
+- HTTPS enforced on `authorization_endpoint` and `token_endpoint` URLs from OIDC discovery before use.
+- `EDA_MCP_OAUTH_ISSUER` override validated as HTTPS.
+- `assert` guards replaced with proper runtime checks (asserts are disabled under `python -O`).
 - **Brokered OAuth requires PKCE.** In broker mode `/authorize` refuses a request without `code_challenge_method=S256`. Cognito treats PKCE as optional and the broker's `/token` rewrite removes Cognito's own `redirect_uri` check, so a flow without it would leave a leaked code redeemable by anyone.
 - **Broker redirect policy matches hosts exactly and pins known callback paths.** Subdomains of vendor hosts are no longer implied (`EDA_MCP_EXTRA_REDIRECT_HOSTS` takes `.host` to opt in), `openai.com` is narrowed to `chat.openai.com/aip/`, and URIs with dot segments, backslashes, whitespace or non-ASCII are refused so the policy and the browser cannot disagree about where a redirect goes.
 - The server logs a warning when brokering without `EDA_MCP_BROKER_SECRET`; the fallback key is derived from public identifiers.
@@ -36,14 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In OAuth mode, outbound EasyDeploy API calls use only the per-request bearer; `EDA_API_KEY` is not used as a fallback.
 - `EDA_API_BASE` is optional; the client defaults to the production EasyDeploy API. Set it only for custom or staging endpoints.
 
-### Security
-
-- `MCP_SERVICE_TOKEN` comparison uses `hmac.compare_digest` (constant-time).
-- Explicit `verify=True` on all outbound `httpx` clients.
-- HTTPS enforced on `authorization_endpoint` and `token_endpoint` URLs from OIDC discovery before use.
-- `EDA_MCP_OAUTH_ISSUER` override validated as HTTPS.
-- `assert` guards replaced with proper runtime checks (asserts are disabled under `python -O`).
-
 ## [0.1.0] - 2026-04-07
 
 ### Added
@@ -54,4 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional `MCP_SERVICE_TOKEN` for gating the HTTP MCP surface; HTTPS-only calls to the EasyDeploy API.
 - `Dockerfile` for self-hosted deployments.
 
+[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/releases/tag/v0.1.0
