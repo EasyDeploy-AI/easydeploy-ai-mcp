@@ -44,6 +44,20 @@ We host the MCP endpoint. You add it once inside Claude; after you connect and s
 
 More detail and variants (for example a URL from your own deployment) are in [docs/claude-getting-started.md](docs/claude-getting-started.md).
 
+### Getting a training file into EasyDeploy
+
+`start_upload` opens an upload session and the agent picks the best byte channel the host offers. **File contents never travel through the conversation or through tool arguments on any channel** — the agent passes a URL or runs a `curl`, never the data itself.
+
+| Channel | When it is used | Flow |
+| --- | --- | --- |
+| **File parameter** | Hosts that support `openai/fileParams` (Codex, ChatGPT). `start_upload` declares `_meta: {"openai/fileParams": ["file"]}`, so the host hydrates a `file` argument with a download URL. No sandbox network needed. | `start_upload(..., file=…)` → session goes to `RECEIVING` → poll `get_upload_status` → `complete_upload` |
+| **Gateway PUT** (default) | Claude Code, Cowork, and claude.ai / Desktop sandboxes with egress. Max **6 MB** per file; the gateway answers **413** above that, and there is no chunking path. | `start_upload` → run the returned `curl_command` in bash → poll `get_upload_status` → `complete_upload` |
+| **Fetch from a share link** | The sandbox has no egress but the file is already at a shareable URL: a Google Sheets or Drive link set to **anyone with the link**, an OpenAI file link, or another allowlisted host. EasyDeploy fetches the bytes server-side. | `start_upload` → `upload_from_url(upload_request_id, source_url)` → poll `get_upload_status` → `complete_upload` |
+
+`get_upload_status` reports `URL_ISSUED → RECEIVING → UPLOADED → VALIDATING → READY | REJECTED → CONSUMED` (plus `EXPIRED`). **`complete_upload` requires `READY`** — every byte that becomes a dataset version passes the CSV validator first, and any other state returns a 400 naming what to do. On `REJECTED`, the `error` field says which check failed.
+
+**Fallback when the host has no byte channel at all** (no egress and no file bridge): the agent saves the training file, hands it to you as a download, and points you at **[easydeploy.ai/model-builder](https://www.easydeploy.ai/model-builder)**. After you upload there, tell the agent the **dataset name you entered** or paste the **dataset URL** from the page — it resolves the dataset with `list_datasets` and confirms the row count before continuing. That upload is already registered as a dataset, so `complete_upload` is not used for it. Adding the allowlist entry above (where your plan allows it) avoids the detour.
+
 ---
 
 ### Local MCP on your computer (stdio)
@@ -92,7 +106,7 @@ For self-hosting on Docker or a cloud provider, see [Remote MCP (HTTP)](#remote-
 
 ## What you get
 
-- **24 tools** covering projects, datasets (including upload flow), model versions, training jobs, predictions, and account status.
+- **26 tools** covering projects, datasets (including the three upload channels), model versions, training jobs, predictions, and account status.
 - **stdio** transport for local clients, or **HTTP** with Streamable MCP on `/mcp` and **GET /healthz** for load balancers.
 - **Hardening:** HTTPS-only calls to the EasyDeploy API; optional `MCP_SERVICE_TOKEN` for the HTTP MCP surface; response fields trimmed where appropriate for agents.
 

@@ -176,6 +176,30 @@ async def test_eda_mcp_create_model_version_delegates(eda_mcp_server):
 
 
 @pytest.mark.asyncio
+async def test_eda_mcp_create_model_version_time_series(eda_mcp_server):
+    payload = {"id": "mv-ts", "modelId": "m1", "version": 1, "status": "DRAFT"}
+    mock_fn = AsyncMock(return_value=payload)
+    with patch("easydeploy_ai_mcp.server.api_client.create_model_version", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool(
+                "create_model_version",
+                {
+                    "project_id": "p1",
+                    "model_id": "m1",
+                    "dataset_version_id": "dv1",
+                    "target_feature": "revenue",
+                    "time_series_mode": True,
+                    "time_column": "week",
+                },
+            )
+
+    assert not result.is_error
+    body = mock_fn.call_args[0][2]
+    assert body["timeSeriesMode"] is True
+    assert body["timeColumn"] == "week"
+
+
+@pytest.mark.asyncio
 async def test_eda_mcp_submit_training_job_accepts_dataset_version_id(eda_mcp_server):
     job_payload = {"jobId": "job_abc", "modelVersionId": "mv_xyz", "status": "SUBMITTED"}
     mock_fn = AsyncMock(return_value=job_payload)
@@ -479,6 +503,219 @@ async def test_eda_mcp_start_upload_returns_gateway_curl_command(eda_mcp_server)
 
 
 @pytest.mark.asyncio
+async def test_eda_mcp_start_upload_next_steps_is_the_runbook(eda_mcp_server):
+    presign = {
+        "gatewayUploadUrl": "https://api.example.com/prod/v1/uploads/data?uploadToken=tok",
+        "uploadRequestId": "upreq-1",
+        "datasetId": "ds-new",
+        "channels": {
+            "gateway": {
+                "method": "PUT",
+                "url": "https://api.example.com/prod/v1/uploads/data?uploadToken=tok",
+                "maxBytes": 6_291_456,
+                "header": "X-Upload-Token",
+            },
+            "fromUrl": {"method": "POST", "url": "https://api.example.com/v1/uploads/from-url"},
+            "status": {"method": "GET", "url": "https://api.example.com/v1/uploads/upreq-1"},
+        },
+        "fallback": "Hand the file to the user and send them to the model builder.",
+    }
+    mock_fn = AsyncMock(return_value=presign)
+    with patch("easydeploy_ai_mcp.server.api_client.get_upload_url", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("start_upload", {
+                "filename": "train.csv",
+                "project_id": "p1",
+            })
+
+    assert not result.is_error
+    data = result.data
+    assert "curl_command" in data
+    steps = data["next_steps"]
+    assert "413" in steps
+    assert "upload_from_url" in steps
+    assert "get_upload_status" in steps
+    assert "https://www.easydeploy.ai/model-builder" in steps
+    assert "list_datasets" in steps
+    assert "complete_upload" in steps
+
+    # Channels pass through with the gateway token stripped; no secrets or keys leak.
+    assert data["channels"]["fromUrl"]["url"].endswith("/uploads/from-url")
+    assert data["channels"]["status"]["url"].endswith("/uploads/upreq-1")
+    assert "uploadToken" not in data["channels"]["gateway"]["url"]
+    assert data["fallback"] == presign["fallback"]
+
+    blob = json.dumps(data)
+    assert "uploadToken=tok" not in blob
+    assert "s3Key" not in blob
+    assert "bucket" not in blob
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_start_upload_with_file_uses_from_url(eda_mcp_server):
+    presign = {
+        "gatewayUploadUrl": "https://api.example.com/prod/v1/uploads/data?uploadToken=tok",
+        "uploadRequestId": "upreq-file",
+        "datasetId": "ds-file",
+        "s3Key": "staging/upreq-file/raw",
+        "bucket": "secret-bucket",
+    }
+    presign_mock = AsyncMock(return_value=presign)
+    from_url_mock = AsyncMock(
+        return_value={"uploadRequestId": "upreq-file", "status": "RECEIVING"}
+    )
+    download_url = "https://files.openai.example.com/f/abc123?sig=zzz"
+    with patch("easydeploy_ai_mcp.server.api_client.get_upload_url", presign_mock), \
+         patch("easydeploy_ai_mcp.server.api_client.upload_from_url", from_url_mock):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("start_upload", {
+                "filename": "train.csv",
+                "project_id": "p1",
+                "file": {
+                    "download_url": download_url,
+                    "file_id": "file-abc123",
+                    "mime_type": "text/csv",
+                    "file_name": "train.csv",
+                },
+            })
+
+    assert not result.is_error
+    presign_mock.assert_called_once()
+    from_url_mock.assert_called_once()
+    _args, _kwargs = from_url_mock.call_args
+    assert _args[0] == "upreq-file"
+    assert _args[1] == download_url
+    assert _kwargs["base_url"] == BASE
+    assert _kwargs["api_key"] == API_KEY
+
+    data = result.data
+    assert data["status"] == "RECEIVING"
+    assert data["channel"] == "file"
+    assert data["upload_request_id"] == "upreq-file"
+    assert data["dataset_id"] == "ds-file"
+    assert "get_upload_status" in data["next_steps"]
+
+    blob = json.dumps(data)
+    assert download_url not in blob
+    assert "download_url" not in blob
+    assert "curl_command" not in blob
+    assert "secret-bucket" not in blob
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_start_upload_declares_openai_file_params(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    tool = next(t for t in tools if t.name == "start_upload")
+
+    assert tool.meta is not None
+    assert tool.meta["openai/fileParams"] == ["file"]
+
+    file_schema = tool.inputSchema["properties"]["file"]
+    # Optional parameter: the object schema is one branch of the anyOf.
+    obj = next(
+        branch for branch in file_schema["anyOf"] if branch.get("type") == "object"
+    )
+    assert set(obj["required"]) == {"download_url", "file_id"}
+    assert set(obj["properties"]) == {
+        "download_url", "file_id", "mime_type", "file_name",
+    }
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_upload_from_url_delegates(eda_mcp_server):
+    payload = {
+        "uploadRequestId": "upreq-2",
+        "status": "RECEIVING",
+        "nextStep": "poll status",
+        "statusUrl": "https://api.example.com/v1/uploads/upreq-2",
+    }
+    mock_fn = AsyncMock(return_value=payload)
+    with patch("easydeploy_ai_mcp.server.api_client.upload_from_url", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("upload_from_url", {
+                "upload_request_id": "upreq-2",
+                "source_url": "https://docs.google.com/spreadsheets/d/abc/edit",
+            })
+
+    assert not result.is_error
+    mock_fn.assert_called_once_with(
+        "upreq-2",
+        "https://docs.google.com/spreadsheets/d/abc/edit",
+        api_key=API_KEY,
+        base_url=BASE,
+        caller_channel="MCP_AGENT",
+    )
+    assert result.data["status"] == "RECEIVING"
+    assert "get_upload_status" in result.data["next_steps"]
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_upload_from_url_surfaces_api_message(eda_mcp_server):
+    request = httpx.Request("POST", f"{BASE}/uploads/from-url")
+    response = httpx.Response(400, request=request, json={
+        "error": {"code": "SOURCE_NOT_ALLOWED", "message": "drive.example.com is not an allowed source host"}
+    })
+    mock_fn = AsyncMock(side_effect=httpx.HTTPStatusError(
+        "400 Bad Request for url\nSOURCE_NOT_ALLOWED | drive.example.com is not an allowed source host",
+        request=request,
+        response=response,
+    ))
+    with patch("easydeploy_ai_mcp.server.api_client.upload_from_url", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool(
+                "upload_from_url",
+                {"upload_request_id": "upreq-2", "source_url": "https://drive.example.com/x"},
+                raise_on_error=False,
+            )
+
+    assert result.is_error
+    assert "not an allowed source host" in result.content[0].text
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("READY", "complete_upload"),
+        ("REJECTED", "error"),
+        ("RECEIVING", "3-5 s"),
+        ("UPLOADED", "3-5 s"),
+        ("VALIDATING", "3-5 s"),
+        ("EXPIRED", "start_upload"),
+        ("CONSUMED", "list_dataset_versions"),
+        ("URL_ISSUED", "curl_command"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_eda_mcp_get_upload_status_next_steps_per_status(
+    eda_mcp_server, status, expected
+):
+    payload = {
+        "uploadRequestId": "upreq-3",
+        "status": status,
+        "nextStep": "server hint",
+        "filename": "train.csv",
+        "projectId": "p1",
+        "datasetId": "ds-1",
+        "rowCount": 1200,
+    }
+    mock_fn = AsyncMock(return_value=payload)
+    with patch("easydeploy_ai_mcp.server.api_client.get_upload_status", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool(
+                "get_upload_status", {"upload_request_id": "upreq-3"}
+            )
+
+    assert not result.is_error
+    mock_fn.assert_called_once_with(
+        "upreq-3", api_key=API_KEY, base_url=BASE, caller_channel="MCP_AGENT"
+    )
+    assert result.data["status"] == status
+    assert result.data["rowCount"] == 1200
+    assert expected in result.data["next_steps"]
+
+
+@pytest.mark.asyncio
 async def test_api_client_rejects_http_presigned_url():
     from easydeploy_ai_mcp import api_client
 
@@ -507,3 +744,82 @@ async def test_api_client_accepts_https_presigned_url():
     mock_client.put.assert_called_once()
     _kwargs = mock_client.put.call_args[1]
     assert _kwargs["headers"]["Content-Type"] == "text/csv"
+
+
+def _fake_client(response: httpx.Response):
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=response)
+    mock_client.get = AsyncMock(return_value=response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return mock_client
+
+
+@pytest.mark.asyncio
+async def test_api_client_upload_from_url_posts_and_unwraps_data():
+    from easydeploy_ai_mcp import api_client
+
+    response = httpx.Response(
+        202,
+        request=httpx.Request("POST", f"{BASE}/uploads/from-url"),
+        json={"data": {"uploadRequestId": "upreq-1", "status": "RECEIVING"}},
+    )
+    mock_client = _fake_client(response)
+    with patch("easydeploy_ai_mcp.api_client._secure_client", return_value=mock_client):
+        out = await api_client.upload_from_url(
+            "upreq-1",
+            "https://docs.google.com/spreadsheets/d/abc/edit",
+            api_key=API_KEY,
+            base_url=BASE,
+            caller_channel="MCP_AGENT",
+        )
+
+    assert out["status"] == "RECEIVING"
+    _args, _kwargs = mock_client.post.call_args
+    assert _args[0] == f"{BASE}/uploads/from-url"
+    assert _kwargs["json"] == {
+        "uploadRequestId": "upreq-1",
+        "sourceUrl": "https://docs.google.com/spreadsheets/d/abc/edit",
+    }
+    assert _kwargs["timeout"] == 30.0
+    assert _kwargs["headers"]["X-Caller-Channel"] == "MCP_AGENT"
+
+
+@pytest.mark.asyncio
+async def test_api_client_upload_from_url_raises_with_api_message():
+    from easydeploy_ai_mcp import api_client
+
+    response = httpx.Response(
+        409,
+        request=httpx.Request("POST", f"{BASE}/uploads/from-url"),
+        json={"error": {"code": "BAD_STATE", "message": "upload session is not URL_ISSUED"}},
+    )
+    mock_client = _fake_client(response)
+    with patch("easydeploy_ai_mcp.api_client._secure_client", return_value=mock_client), \
+         pytest.raises(httpx.HTTPStatusError, match="not URL_ISSUED"):
+        await api_client.upload_from_url(
+            "upreq-1", "https://example.com/f.csv",
+            api_key=API_KEY, base_url=BASE,
+        )
+
+
+@pytest.mark.asyncio
+async def test_api_client_get_upload_status_gets_and_unwraps_data():
+    from easydeploy_ai_mcp import api_client
+
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", f"{BASE}/uploads/upreq-1"),
+        json={"data": {"uploadRequestId": "upreq-1", "status": "READY", "rowCount": 42}},
+    )
+    mock_client = _fake_client(response)
+    with patch("easydeploy_ai_mcp.api_client._secure_client", return_value=mock_client):
+        out = await api_client.get_upload_status(
+            "upreq-1", api_key=API_KEY, base_url=BASE, caller_channel="MCP_AGENT",
+        )
+
+    assert out["status"] == "READY"
+    assert out["rowCount"] == 42
+    _args, _kwargs = mock_client.get.call_args
+    assert _args[0] == f"{BASE}/uploads/upreq-1"
+    assert _kwargs["timeout"] == 15.0

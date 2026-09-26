@@ -58,6 +58,38 @@ The domain allowlist UI is available on **paid** Claude plans.
 
 ---
 
+## Getting a training file into EasyDeploy
+
+Claude opens an upload session with `start_upload` and then uses the best byte channel your host offers. **Your file contents never travel through the conversation** — Claude passes a URL or runs a `curl`, never the data itself.
+
+**1. File parameter — hosts that support it (Codex, ChatGPT).**
+`start_upload` declares `_meta: {"openai/fileParams": ["file"]}`, so the host hands EasyDeploy a download link for a file in the sandbox. No network access is needed from the sandbox. The session moves to `RECEIVING`, and Claude polls `get_upload_status` until `READY`, then calls `complete_upload`.
+
+**2. Gateway `curl` — the default on Claude Code, Cowork, and claude.ai or Desktop with egress.**
+`start_upload` returns a ready-made `curl_command`. Claude runs it in bash and polls `get_upload_status`. The gateway takes files up to **6 MB** and answers **413** above that; there is no chunking, so a larger file uses one of the other routes.
+
+**3. Fetch from a share link — no sandbox egress, file already shareable.**
+Claude calls `upload_from_url` with a **Google Sheets or Drive link set to "anyone with the link"**, an OpenAI file link, or another allowlisted host. EasyDeploy fetches the bytes server-side.
+
+Claude then waits for `get_upload_status` to report `READY` — every file passes the CSV validator before it becomes a dataset version — and registers it with `complete_upload`. If the status comes back `REJECTED`, the response says which check failed so Claude can fix the file and start over.
+
+### If no channel works: the model builder
+
+When the host has neither network egress nor a file bridge, Claude does **not** try to carry your data through the chat. Instead it saves the training file, gives it to you as a download, and sends you to:
+
+**[https://www.easydeploy.ai/model-builder](https://www.easydeploy.ai/model-builder)**
+
+Upload the file there, then tell Claude either:
+
+- the **dataset name** you typed on the page, or
+- the **dataset URL** from your browser's address bar.
+
+Claude looks the dataset up (`list_datasets`, or by reading the ids out of the URL), confirms the row count matches the file it handed you, and carries on from there. It will not guess which dataset is yours. A model-builder upload is already a registered dataset, so the `complete_upload` step is skipped.
+
+Turning on network egress with the allowlist entry above (available on paid plans) avoids this detour next time.
+
+---
+
 ## Local MCP (`claude_desktop_config.json`)
 
 Use this when **Claude Desktop** runs the MCP server **on your computer** (stdio). Nothing is exposed to the internet; you only need your **API key** in the config (production API host is built in).

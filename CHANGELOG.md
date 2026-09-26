@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-channel uploads.** `start_upload` now returns every byte channel the API offers (`channels` + `fallback`) and an ordered runbook in `next_steps`. File contents still never pass through tool arguments or the conversation on any channel.
+- **`upload_from_url` tool** — hands EasyDeploy a URL to fetch an upload session's bytes from, server-side: Google Sheets and Drive share links set to anyone-with-link, OpenAI file links, and other allowlisted hosts. For sandboxes with no network egress.
+- **`get_upload_status` tool** — polls an upload session (`URL_ISSUED`, `RECEIVING`, `UPLOADED`, `VALIDATING`, `READY`, `REJECTED`, `CONSUMED`, `EXPIRED`) and adds `next_steps` guidance derived from the state.
+- **`openai/fileParams` on `start_upload`** — an optional `file` parameter (`download_url`, `file_id`, `mime_type`, `file_name`) declared via tool `_meta`, so Codex and ChatGPT can hand a sandbox file straight to EasyDeploy. When present, `start_upload` calls from-url itself and returns the session in `RECEIVING`; the download URL is never echoed back to the model.
+- **`api_client.upload_from_url`** (`POST /uploads/from-url`, 30 s) and **`api_client.get_upload_status`** (`GET /uploads/{id}`, 15 s). Both surface the API's own error message text unchanged.
+- **Model-builder fallback documented in the tool descriptions and errors**: when a host offers no byte channel, the agent hands the file to the user as a download, points at <https://www.easydeploy.ai/model-builder>, then resolves the resulting dataset by the name or URL the user reports back rather than guessing.
+
+### Changed
+
+- **`complete_upload` requires upload status `READY`**, not `UPLOADED` — the validator promotes the bytes before a dataset version is created. Other states return a 400 naming the state; poll `get_upload_status` first. Documented in the tool description.
+- Tool catalog is now **26 tools** (was 24).
+
 ## [0.2.0] - 2026-09-23
 
 The HTTP transport gains OAuth: MCP clients sign in through Cognito instead of

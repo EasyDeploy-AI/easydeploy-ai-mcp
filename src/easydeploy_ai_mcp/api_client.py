@@ -426,6 +426,10 @@ async def get_upload_url(
     Calls POST /uploads/url and returns a gatewayUploadUrl for a direct PUT
     to the API Gateway. Note: this is NOT a presigned S3 URL. See architecture
     docs for rationale.
+
+    The response also carries ``channels`` (``gateway``, ``fromUrl``, ``status``)
+    and a ``fallback`` string describing what to do when no channel works from
+    the caller's sandbox.
     """
     payload: dict[str, str] = {"filename": filename, "projectId": project_id}
     if dataset_id:
@@ -438,6 +442,77 @@ async def get_upload_url(
             timeout=15.0,
         )
         resp.raise_for_status()
+        return resp.json()["data"]
+
+
+async def upload_from_url(
+    upload_request_id: str,
+    source_url: str,
+    *,
+    api_key: str,
+    base_url: str,
+    caller_channel: str = "",
+) -> dict:
+    """
+    POST /uploads/from-url — body { uploadRequestId, sourceUrl }.
+
+    The API fetches the bytes server-side (never through the model) and returns
+    202 with the session in ``RECEIVING``. File contents never pass through this
+    process. Poll ``get_upload_status`` until ``READY``.
+
+    Errors are surfaced with the API's own message text so the caller can act on
+    it: 400 for a disallowed or invalid source URL, 409 when the upload session
+    is not in ``URL_ISSUED``.
+    """
+    payload = {
+        "uploadRequestId": upload_request_id.strip(),
+        "sourceUrl": source_url.strip(),
+    }
+    async with _secure_client() as client:
+        resp = await client.post(
+            f"{base_url}/uploads/from-url",
+            headers=_headers(api_key, caller_channel),
+            json=payload,
+            timeout=30.0,
+        )
+        if resp.is_error:
+            detail = _eda_api_error_detail(resp)
+            raise httpx.HTTPStatusError(
+                f"{resp.status_code} {resp.reason_phrase} for {resp.request.url!r}\n{detail}",
+                request=resp.request,
+                response=resp,
+            )
+        return resp.json()["data"]
+
+
+async def get_upload_status(
+    upload_request_id: str,
+    *,
+    api_key: str,
+    base_url: str,
+    caller_channel: str = "",
+) -> dict:
+    """
+    GET /uploads/{uploadRequestId} — upload session state.
+
+    ``data`` includes ``status`` (URL_ISSUED | RECEIVING | UPLOADED | VALIDATING |
+    READY | REJECTED | CONSUMED | EXPIRED), ``nextStep``, ``filename``,
+    ``projectId``, ``datasetId``, and when available ``sizeBytes``, ``rowCount``,
+    ``error``, ``datasetVersionId``, ``sourceType``, plus timestamps.
+    """
+    async with _secure_client() as client:
+        resp = await client.get(
+            f"{base_url}/uploads/{upload_request_id.strip()}",
+            headers=_headers(api_key, caller_channel),
+            timeout=15.0,
+        )
+        if resp.is_error:
+            detail = _eda_api_error_detail(resp)
+            raise httpx.HTTPStatusError(
+                f"{resp.status_code} {resp.reason_phrase} for {resp.request.url!r}\n{detail}",
+                request=resp.request,
+                response=resp,
+            )
         return resp.json()["data"]
 
 
@@ -741,7 +816,7 @@ async def create_model_version(
 ) -> dict:
     """
     POST /projects/{projectId}/models/{modelId}/versions
-    body: { datasetVersionId, targetFeature }
+    body: { datasetVersionId, targetFeature, timeSeriesMode?, timeColumn? }
     """
     async with _secure_client() as client:
         resp = await client.post(
