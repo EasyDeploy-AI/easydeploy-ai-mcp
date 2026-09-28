@@ -97,7 +97,7 @@ You are the data scientist; EasyDeploy is the training, deployment and predictio
 
 Before uploading:
 - Establish the decision the model supports and the target it predicts. Explore the data yourself: shape, types, missingness, target balance.
-- Drop identifiers and every column not knowable at prediction time. Write a one-sentence target definition.
+- In the train file, drop identifiers and every column not knowable at prediction time: training uses every non-target column as a feature. Write a one-sentence target definition.
 - Confirm data changes and dropped columns with the user before applying them.
 
 Split it yourself:
@@ -107,7 +107,7 @@ Split it yourself:
 
 Reading results:
 - get_model_report: the cross-validation score is estimated inside the training file, and trainingFit metrics are in-sample. Neither is a holdout result.
-- Holdout validation: run_batch_prediction on the test dataset version, download the output via get_prediction, and compute the metrics yourself against the true labels. The output keeps every input column, the target included, in the original row order and adds prediction and probability_<class> columns.
+- Holdout validation: run_batch_prediction on the test dataset version, download the output via get_prediction, and compute the metrics yourself against the true labels. The output keeps every input column, the target included, in the original row order and adds prediction and probability_<class> columns. Keep ids in test and scoring files: prediction uses only the columns the model was trained on and ignores the rest, so ids ride along for joining results back.
 - Choose the decision threshold on that holdout: an F1 sweep for classifiers, the error margin for regressors. Present the holdout numbers as the model's performance.
 - Build dashboards, reports and scored lists only from real prediction output, never mock values.
 
@@ -1307,7 +1307,10 @@ async def run_batch_prediction(
     the holdout metrics and decision threshold yourself from it, since
     EasyDeploy does not return them. For a string target the probability
     columns are named by encoded class index (``probability_0``,
-    ``probability_1``, ... in sorted label order), not by label. The download
+    ``probability_1``, ... in sorted label order), not by label. Columns the
+    model was not trained on, such as ids, are ignored for scoring and kept in
+    the output, so leave them in to join results back; every training feature
+    must be present or the job fails naming the missing one. The download
     is capped at 9 MB, so keep test files small enough that their scored output
     fits, or split the test set across several batches.
 

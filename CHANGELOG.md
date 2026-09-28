@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Server instructions and `run_batch_prediction` say ids belong out of the training file but can stay in test and scoring files, since prediction ignores columns the model wasn't trained on and returns them in the output.
+
 - **`complete_upload` requires upload status `READY`**, not `UPLOADED` — the validator promotes the bytes before a dataset version is created. Other states return a 400 naming the state; poll `get_upload_status` first. Documented in the tool description.
 - Tool catalog is now **27 tools** (was 24): `upload_from_url`, `get_upload_status` and `update_dataset` are new.
 - **`get_dataset` is read-only.** Its `name` and `description` parameters are gone; use `update_dataset`.
