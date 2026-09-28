@@ -1176,3 +1176,54 @@ async def test_eda_mcp_choice_params_list_enums(eda_mcp_server, tool, param, enu
     schema = next(t for t in tools if t.name == tool).inputSchema["properties"][param]
     assert schema["enum"] == enum
     assert schema["default"] == default
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_initialize_carries_data_scientist_instructions(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        init = client.initialize_result
+    assert init is not None
+    text = init.instructions
+    assert text and text == _eda_mod.SERVER_INSTRUCTIONS
+    assert "You are the data scientist" in text
+    # The split is the agent's job, and each file is uploaded with its type.
+    assert "80/20" in text and "chronological" in text
+    assert '"train"' in text and '"test"' in text
+    assert "train dataset version only" in text
+    # The holdout estimate comes from scoring the test file, not from the report.
+    assert "run_batch_prediction on the test dataset version" in text
+    assert "true labels" in text
+    assert "never mock values" in text
+    assert "start_upload's next_steps" in text
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_descriptions_explain_the_train_test_roles(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    desc = {t.name: t.description or "" for t in tools}
+
+    cu = desc["complete_upload"]
+    for phrase in ("``train`` is what the model", "``test`` is the holdout",
+                   "``validation`` is an optional", "never splits for you"):
+        assert phrase in cu, phrase
+    assert "never the test one" in desc["create_model_version"]
+    assert "separate uploads" in desc["start_upload"]
+    rb = desc["run_batch_prediction"]
+    assert "Holdout validation" in rb and "original row order" in rb
+    assert "probability_<class>" in rb
+    assert "not from this report" in desc["get_model_report"]
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_upload_from_url_allowlist_and_cap_wording(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    desc = next(t for t in tools if t.name == "upload_from_url").description
+    # The source allowlist has no EasyDeploy host (uploadSource.ts
+    # DEFAULT_ALLOWED_SOURCE_HOSTS is OpenAI and Google only).
+    assert "EasyDeploy's own" not in desc
+    assert "upload hostname" not in desc
+    assert "256 MB" in desc
+    blob = " ".join(t.description or "" for t in tools) + _eda_mod.SERVER_INSTRUCTIONS
+    assert "512" not in blob

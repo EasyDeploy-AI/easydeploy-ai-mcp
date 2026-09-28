@@ -58,6 +58,18 @@ The domain allowlist UI is available on **paid** Claude plans.
 
 ---
 
+## You are the data scientist
+
+EasyDeploy finds the model, engineers features, tunes it, trains it, deploys it and runs predictions. It does not clean your data, define what to predict, split the data, or test the model on rows it never saw. Claude does those parts, and the EasyDeploy server tells it so when it connects:
+
+1. **Prepare the data.** Claude agrees with you on the decision and the target, explores the data, removes identifiers and anything you would not know at prediction time, and writes the target down in one sentence. It asks you before changing data or dropping columns.
+2. **Split it.** A stratified 80/20 split for classification, or a split by date for time series. The same customer (or other entity) never lands in both files, and there are no duplicates. Balancing such as SMOTE is applied to the train file only.
+3. **Upload and train.** The train and test files are uploaded separately, marked `train` and `test` (a `validation` file is optional). The model trains on the train file only.
+4. **Check it on the test file.** The training report's cross-validation score is measured inside the training file, and its accuracy and confusion matrix are measured on rows the model learned from. For a real estimate Claude scores the test file with `run_batch_prediction`, downloads the predictions (every original column, the true answer included, in the same row order, plus `prediction` and `probability_<class>` columns), works out the metrics, and picks a decision threshold: an F1 sweep for classifiers, the error margin for regressors. That is the performance it reports to you.
+5. **Use real predictions.** Any dashboard, report or scored list comes from real prediction output, never made-up values.
+
+---
+
 ## Getting a training file into EasyDeploy
 
 Claude opens an upload session with `start_upload` and then uses the best byte channel your host offers. **Your file contents never travel through the conversation** — Claude passes a URL or runs a `curl`, never the data itself.
@@ -69,7 +81,7 @@ Claude opens an upload session with `start_upload` and then uses the best byte c
 `start_upload` returns a ready-made `curl_command`. Claude runs it in bash and polls `get_upload_status`. The gateway takes files up to **6 MB** and answers **413** above that; there is no chunking, so a larger file uses one of the other routes.
 
 **3. Fetch from a share link — no sandbox egress, file already shareable.**
-Claude calls `upload_from_url` with a **Google Sheets or Drive link set to "anyone with the link"**, an OpenAI file link, or another allowlisted host. EasyDeploy fetches the bytes server-side.
+Claude calls `upload_from_url` with a **Google Sheets or Drive link set to "anyone with the link"**, an OpenAI file link, or another allowlisted host. EasyDeploy fetches the bytes server-side, up to **256 MB**.
 
 Claude then waits for `get_upload_status` to report `READY` — every file passes the CSV validator before it becomes a dataset version — and registers it with `complete_upload`. If the status comes back `REJECTED`, the response says which check failed so Claude can fix the file and start over.
 
@@ -94,7 +106,7 @@ Turning on network egress with the allowlist entry above (available on paid plan
 
 When Claude reads a training report with `get_model_report`, the numbers come with a structured `metrics` object that says how each one was measured:
 
-- **Cross-validation score** (`metrics.crossValidation`) is the out-of-sample estimate to rely on. Models are chosen by 10-fold cross-validation, then refit on all rows; there is no separate test set.
+- **Cross-validation score** (`metrics.crossValidation`) is the report's out-of-sample estimate. Models are chosen by 10-fold cross-validation inside the training file, then refit on all rows; the report has no separate test set. The holdout estimate comes from scoring your test file (see [You are the data scientist](#you-are-the-data-scientist)).
 - **Training fit** (`metrics.trainingFit`) — accuracy, confusion matrix, per-class precision and recall, in-sample ROC-AUC — is measured on the same rows the model learned from, so it runs high.
 - **Forecasts:** a model created in time-series mode is validated with forward-chaining (each fold trains on earlier periods and scores on later ones). `metrics.crossValidation.strategy` shows `time_series_split` for those runs.
 - The written summary is produced by an LLM and may phrase things more loosely than the numbers.
