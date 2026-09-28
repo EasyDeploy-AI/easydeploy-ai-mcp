@@ -73,6 +73,8 @@ Claude calls `upload_from_url` with a **Google Sheets or Drive link set to "anyo
 
 Claude then waits for `get_upload_status` to report `READY` — every file passes the CSV validator before it becomes a dataset version — and registers it with `complete_upload`. If the status comes back `REJECTED`, the response says which check failed so Claude can fix the file and start over.
 
+**New dataset or new version?** If Claude starts the upload without a dataset id, `complete_upload` creates a new dataset. If it passes an existing dataset's id, the file becomes a new version of that dataset and keeps the dataset's current name. `qa_status` is informational and does not gate anything. `version_type` matters in one case: `submit_training_job` with an explicit `dataset_version_id` rejects a `raw` version. Omit `dataset_version_id` to train on the model version's own dataset.
+
 ### If no channel works: the model builder
 
 When the host has neither network egress nor a file bridge, Claude does **not** try to carry your data through the chat. Instead it saves the training file, gives it to you as a download, and sends you to:
@@ -87,6 +89,15 @@ Upload the file there, then tell Claude either:
 Claude looks the dataset up (`list_datasets`, or by reading the ids out of the URL), confirms the row count matches the file it handed you, and carries on from there. It will not guess which dataset is yours. A model-builder upload is already a registered dataset, so the `complete_upload` step is skipped.
 
 Turning on network egress with the allowlist entry above (available on paid plans) avoids this detour next time.
+
+## Reading a model report
+
+When Claude reads a training report with `get_model_report`, the numbers come with a structured `metrics` object that says how each one was measured:
+
+- **Cross-validation score** (`metrics.crossValidation`) is the out-of-sample estimate to rely on. Models are chosen by 10-fold cross-validation, then refit on all rows; there is no separate test set.
+- **Training fit** (`metrics.trainingFit`) — accuracy, confusion matrix, per-class precision and recall, in-sample ROC-AUC — is measured on the same rows the model learned from, so it runs high.
+- **Forecasts:** a model created in time-series mode is validated with forward-chaining (each fold trains on earlier periods and scores on later ones). `metrics.crossValidation.strategy` shows `time_series_split` for those runs.
+- The written summary is produced by an LLM and may phrase things more loosely than the numbers.
 
 ---
 

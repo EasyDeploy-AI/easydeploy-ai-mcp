@@ -27,6 +27,75 @@ async def test_eda_mcp_registered_tools_match_manifest(eda_mcp_server):
         tools = await client.list_tools()
     names = {t.name for t in tools}
     assert names == _eda_mod.EDA_MCP_TOOL_NAMES
+    assert len(names) == 27
+
+
+_READ_TOOLS = {
+    "get_account_status",
+    "list_projects",
+    "get_project",
+    "list_datasets",
+    "get_dataset",
+    "get_upload_status",
+    "list_dataset_versions",
+    "get_dataset_version",
+    "get_model",
+    "list_models",
+    "list_model_versions",
+    "get_model_version",
+    "get_model_report",
+    "get_training_status",
+    "get_prediction",
+    "list_predictions",
+}
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_every_tool_has_annotations(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    by_name = {t.name: t for t in tools}
+
+    for tool in tools:
+        ann = tool.annotations
+        assert ann is not None, f"{tool.name} has no annotations"
+        for hint in ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"):
+            assert getattr(ann, hint) is not None, f"{tool.name} is missing {hint}"
+        # Nothing in this server deletes anything.
+        assert ann.destructiveHint is False, tool.name
+
+    read_only = {t.name for t in tools if t.annotations.readOnlyHint}
+    assert read_only == _READ_TOOLS
+    for name in _READ_TOOLS:
+        assert by_name[name].annotations.idempotentHint is True, name
+
+    writes = set(by_name) - _READ_TOOLS
+    idempotent_writes = {n for n in writes if by_name[n].annotations.idempotentHint}
+    assert idempotent_writes == {"update_dataset"}
+    # Both make EasyDeploy fetch an external URL (start_upload via a host ``file``).
+    open_world = {t.name for t in tools if t.annotations.openWorldHint}
+    assert open_world == {"upload_from_url", "start_upload"}
+    # Create-or-update tools PATCH when an id is passed; they are writes, not idempotent.
+    for name in ("create_project", "create_model"):
+        assert by_name[name].annotations.readOnlyHint is False
+        assert by_name[name].annotations.idempotentHint is False
+    # Annotations do not displace start_upload's file-parameter meta.
+    assert by_name["start_upload"].meta["openai/fileParams"] == ["file"]
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_descriptions_drop_stale_host_notes(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    blob = " ".join(t.description or "" for t in tools)
+    assert "stale server code" not in blob
+    assert "does not appear in your MCP tool list" not in blob
+    assert "26 tools" not in blob
+    assert "used by the QA pipeline" not in blob
+    ts = next(t for t in tools if t.name == "create_model_version").description
+    assert "forward-chaining" in ts and "TimeSeriesSplit" in ts
+    assert "metrics.crossValidation.strategy" in ts
+    assert "time_series_split" in ts
 
 
 @pytest.mark.asyncio
@@ -592,7 +661,9 @@ async def test_eda_mcp_start_upload_with_file_uses_from_url(eda_mcp_server):
     assert data["status"] == "RECEIVING"
     assert data["channel"] == "file"
     assert data["upload_request_id"] == "upreq-file"
-    assert data["dataset_id"] == "ds-file"
+    # The caller passed no dataset_id, so the API's pre-assigned id is not echoed.
+    assert "dataset_id" not in data
+    assert "dataset_id=" not in data["next_steps"]
     assert "get_upload_status" in data["next_steps"]
 
     blob = json.dumps(data)
@@ -823,3 +894,285 @@ async def test_api_client_get_upload_status_gets_and_unwraps_data():
     _args, _kwargs = mock_client.get.call_args
     assert _args[0] == f"{BASE}/uploads/upreq-1"
     assert _kwargs["timeout"] == 15.0
+
+
+# ── get_dataset / update_dataset ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_get_dataset_is_pure_read(eda_mcp_server):
+    get_mock = AsyncMock(return_value={"id": "ds-1", "name": "Churn"})
+    update_mock = AsyncMock()
+    with patch("easydeploy_ai_mcp.server.api_client.get_dataset", get_mock), \
+         patch("easydeploy_ai_mcp.server.api_client.update_dataset", update_mock):
+        async with Client(eda_mcp_server) as client:
+            tools = await client.list_tools()
+            result = await client.call_tool(
+                "get_dataset", {"project_id": "p1", "dataset_id": "ds-1"}
+            )
+
+    schema = next(t for t in tools if t.name == "get_dataset").inputSchema
+    assert set(schema["properties"]) == {"project_id", "dataset_id"}
+    assert not result.is_error
+    assert result.data["name"] == "Churn"
+    assert result.data["ui_url"].endswith("/projects/p1/datasets/ds-1")
+    get_mock.assert_called_once()
+    update_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_update_dataset_patches(eda_mcp_server):
+    mock_fn = AsyncMock(return_value={"id": "ds-1", "name": "Renamed"})
+    with patch("easydeploy_ai_mcp.server.api_client.update_dataset", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("update_dataset", {
+                "project_id": "p1", "dataset_id": "ds-1", "name": " Renamed ",
+            })
+
+    assert not result.is_error
+    assert result.data["name"] == "Renamed"
+    assert result.data["ui_url"].endswith("/projects/p1/datasets/ds-1")
+    mock_fn.assert_called_once_with(
+        "p1", "ds-1", {"name": "Renamed"},
+        api_key=API_KEY, base_url=BASE, caller_channel="MCP_AGENT",
+    )
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_update_dataset_requires_a_field(eda_mcp_server):
+    mock_fn = AsyncMock()
+    with patch("easydeploy_ai_mcp.server.api_client.update_dataset", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool(
+                "update_dataset",
+                {"project_id": "p1", "dataset_id": "ds-1", "name": " ", "description": ""},
+                raise_on_error=False,
+            )
+
+    assert result.is_error
+    assert "name and/or description" in result.content[0].text
+    mock_fn.assert_not_called()
+
+
+# ── columnNames normalization ────────────────────────────────────────────────
+
+
+def test_normalize_column_names_parses_json_string():
+    out = _eda_mod._normalize_column_names({"id": "v1", "columnNamesJson": '["a", "b"]'})
+    assert out == {"id": "v1", "columnNames": ["a", "b"]}
+
+
+def test_normalize_column_names_keeps_unparseable_raw():
+    out = _eda_mod._normalize_column_names({"columnNamesJson": "a,b,c"})
+    assert out == {"columnNamesJson": "a,b,c"}
+    # Valid JSON that is not a list is also left alone.
+    out = _eda_mod._normalize_column_names({"columnNamesJson": '{"a": 1}'})
+    assert out == {"columnNamesJson": '{"a": 1}'}
+
+
+def test_normalize_column_names_handles_null_and_nesting():
+    out = _eda_mod._normalize_column_names([
+        {"columnNamesJson": None},
+        {"datasetVersion": {"columnNamesJson": '["x"]'}},
+        "not-a-dict",
+    ])
+    assert out[0] == {"columnNames": None}
+    assert out[1] == {"datasetVersion": {"columnNames": ["x"]}}
+    assert out[2] == "not-a-dict"
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_complete_upload_returns_version_once_with_column_list(eda_mcp_server):
+    version = {
+        "id": "dv-1", "datasetId": "ds-1", "version": 1, "rowCount": 10,
+        "columnNamesJson": '["age", "plan", "churned"]',
+        "version_type": "raw", "qa_status": "pending",
+    }
+    payload = {
+        "dataset": {"id": "ds-1", "name": "Churn", "datasetVersion": dict(version)},
+        "datasetVersion": dict(version),
+    }
+    mock_fn = AsyncMock(return_value=payload)
+    with patch("easydeploy_ai_mcp.server.api_client.complete_dataset_upload", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("complete_upload", {
+                "project_id": "p1", "name": "Churn", "upload_request_id": "upreq-1",
+            })
+
+    assert not result.is_error
+    data = result.data
+    assert "datasetVersion" not in data["dataset"]
+    assert data["dataset"]["ui_url"].endswith("/projects/p1/datasets/ds-1")
+    dv = data["datasetVersion"]
+    assert dv["columnNames"] == ["age", "plan", "churned"]
+    assert "columnNamesJson" not in dv
+    assert dv["ui_url"].endswith("/projects/p1/datasets/ds-1?version=1")
+    assert "datasetId" not in mock_fn.call_args[0][1]
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_dataset_version_tools_return_column_lists(eda_mcp_server):
+    one = {"id": "dv-1", "version": 2, "columnNamesJson": '["a","b"]'}
+    listed = [{"id": "dv-1", "version": 2, "projectId": "p1", "columnNamesJson": '["a","b"]'}]
+    created = {"datasetVersion": {"id": "dv-3", "version": 3, "columnNamesJson": '["a"]'}}
+    with patch("easydeploy_ai_mcp.server.api_client.get_dataset_version", AsyncMock(return_value=one)), \
+         patch("easydeploy_ai_mcp.server.api_client.list_dataset_versions", AsyncMock(return_value=listed)), \
+         patch("easydeploy_ai_mcp.server.api_client.create_dataset_version", AsyncMock(return_value=created)):
+        async with Client(eda_mcp_server) as client:
+            got = await client.call_tool("get_dataset_version", {
+                "project_id": "p1", "dataset_id": "ds-1", "version_id": "dv-1",
+            })
+            lst = await client.call_tool("list_dataset_versions", {"dataset_id": "ds-1"})
+            made = await client.call_tool("create_dataset_version", {
+                "project_id": "p1", "dataset_id": "ds-1",
+                "version_type": "training", "file_url": "s3://b/k.csv", "qa_metadata": {},
+            })
+
+    assert got.data["columnNames"] == ["a", "b"]
+    assert "columnNamesJson" not in got.data
+    lst_data = json.loads(lst.content[0].text)
+    assert lst_data[0]["columnNames"] == ["a", "b"]
+    assert made.data["datasetVersion"]["columnNames"] == ["a"]
+
+
+# ── start_upload dataset_id ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_start_upload_omits_dataset_id_unless_passed(eda_mcp_server):
+    presign = {
+        "gatewayUploadUrl": "https://api.example.com/prod/v1/uploads/data?uploadToken=tok",
+        "uploadRequestId": "upreq-1",
+        "datasetId": "ds-preassigned",
+    }
+    with patch("easydeploy_ai_mcp.server.api_client.get_upload_url", AsyncMock(return_value=dict(presign))):
+        async with Client(eda_mcp_server) as client:
+            fresh = await client.call_tool("start_upload", {"filename": "a.csv", "project_id": "p1"})
+    assert "dataset_id" not in fresh.data
+    assert "datasetId" not in fresh.data
+    assert "ds-preassigned" not in json.dumps(fresh.data)
+    assert "a new dataset is created" in fresh.data["next_steps"]
+
+    presign["datasetId"] = "ds-existing"
+    mock_fn = AsyncMock(return_value=dict(presign))
+    with patch("easydeploy_ai_mcp.server.api_client.get_upload_url", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            again = await client.call_tool("start_upload", {
+                "filename": "a.csv", "project_id": "p1", "dataset_id": "ds-existing",
+            })
+    assert again.data["dataset_id"] == "ds-existing"
+    assert "dataset_id='ds-existing'" in again.data["next_steps"]
+    assert mock_fn.call_args[1]["dataset_id"] == "ds-existing"
+
+
+# ── get_training_status timeout ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_get_training_status_timeout_says_poll_again(eda_mcp_server):
+    running = {"jobId": "job-1", "status": "RUNNING", "modelVersionId": "mv-1"}
+    mock_fn = AsyncMock(return_value=dict(running))
+    # timeout_seconds and poll_interval_seconds both floor at 1: one real 1 s sleep.
+    with patch("easydeploy_ai_mcp.server.api_client.get_training_status", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            tools = await client.list_tools()
+            result = await client.call_tool("get_training_status", {
+                "job_id": "job-1", "wait": True, "timeout_seconds": 1,
+                "poll_interval_seconds": 1,
+            })
+
+    schema = next(t for t in tools if t.name == "get_training_status").inputSchema
+    assert schema["properties"]["timeout_seconds"]["default"] == 180
+    assert not result.is_error
+    assert result.data["timed_out"] is True
+    assert result.data["status"] == "RUNNING"
+    steps = result.data["next_steps"]
+    assert "still running" in steps
+    assert "get_training_status" in steps
+    assert "job_id='job-1'" in steps
+    assert "Do not call submit_training_job again" in steps
+    assert mock_fn.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_get_training_status_terminal_has_no_next_steps(eda_mcp_server):
+    mock_fn = AsyncMock(return_value={"jobId": "job-1", "status": "COMPLETE"})
+    with patch("easydeploy_ai_mcp.server.api_client.get_training_status", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("get_training_status", {"job_id": "job-1", "wait": True})
+    assert result.data["status"] == "COMPLETE"
+    assert "timed_out" not in result.data
+    assert "next_steps" not in result.data
+
+
+# ── get_model_report metrics passthrough ─────────────────────────────────────
+
+
+_METRICS = {
+    "taskType": "classification",
+    "crossValidation": {
+        "metric": "roc_auc", "score": 0.81, "strategy": "stratified_kfold", "folds": 10,
+        "strategySource": "platform_default", "note": "shuffled",
+    },
+    "trainingFit": {"note": "in-sample", "accuracy": 0.97, "rocAuc": 0.99},
+    "warnings": ["Training-fit numbers are in-sample."],
+}
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_get_model_report_passes_metrics_through(eda_mcp_server):
+    versions = [{"id": "mv-1", "edaReportStatus": "READY"}]
+    report = {"summary": {"headline": "ok"}, "metrics": _METRICS, "_reportScope": "summary"}
+    with patch("easydeploy_ai_mcp.server.api_client.list_model_versions", AsyncMock(return_value=versions)), \
+         patch("easydeploy_ai_mcp.server.api_client.get_model_report", AsyncMock(return_value=report)):
+        async with Client(eda_mcp_server) as client:
+            tools = await client.list_tools()
+            result = await client.call_tool("get_model_report", {"model_id": "m1", "project_id": "p1"})
+
+    assert not result.is_error
+    assert result.data["metrics"] == _METRICS
+    desc = next(t for t in tools if t.name == "get_model_report").description
+    for phrase in ("10-fold", "refit on all rows", "no separate test set",
+                   "training fit", "strategySource", "metricsUnavailableReason", "LLM"):
+        assert phrase in desc, phrase
+
+
+@pytest.mark.parametrize("where", ["data", "meta"])
+@pytest.mark.asyncio
+async def test_api_client_get_model_report_keeps_metrics(where):
+    from easydeploy_ai_mcp import api_client
+
+    data = {"summary": {"headline": "ok"}}
+    meta = {"modelVersionId": "mv-1", "reportScope": "summary"}
+    extra = {"metrics": None, "metricsUnavailableReason": "report predates metrics"}
+    (data if where == "data" else meta).update(extra)
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", f"{BASE}/models/m1/report"),
+        json={"data": data, "meta": meta},
+    )
+    with patch("easydeploy_ai_mcp.api_client._secure_client", return_value=_fake_client(response)):
+        out = await api_client.get_model_report(
+            "m1", api_key=API_KEY, base_url=BASE, caller_channel="MCP_AGENT",
+        )
+
+    assert out["metrics"] is None
+    assert out["metricsUnavailableReason"] == "report predates metrics"
+    assert out["_resolvedModelVersionId"] == "mv-1"
+
+
+@pytest.mark.parametrize(
+    ("tool", "param", "enum", "default"),
+    [
+        ("complete_upload", "dataset_type", ["train", "test", "validation"], "train"),
+        ("create_dataset_version", "version_type", ["", "raw", "qa_cleaned", "training"], ""),
+        ("create_dataset_version", "qa_status", ["", "pending", "in_progress", "ready", "blocked"], ""),
+    ],
+)
+@pytest.mark.asyncio
+async def test_eda_mcp_choice_params_list_enums(eda_mcp_server, tool, param, enum, default):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    schema = next(t for t in tools if t.name == tool).inputSchema["properties"][param]
+    assert schema["enum"] == enum
+    assert schema["default"] == default
