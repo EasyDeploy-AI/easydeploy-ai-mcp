@@ -56,7 +56,13 @@ More detail and variants (for example a URL from your own deployment) are in [do
 
 `get_upload_status` reports `URL_ISSUED → RECEIVING → UPLOADED → VALIDATING → READY | REJECTED → CONSUMED` (plus `EXPIRED`). **`complete_upload` requires `READY`** — every byte that becomes a dataset version passes the CSV validator first, and any other state returns a 400 naming what to do. On `REJECTED`, the `error` field says which check failed.
 
+**New dataset or new version.** Omit `dataset_id` on `start_upload` and `complete_upload` creates a new dataset with the name you give it. Pass an existing dataset's id and the upload becomes a new version of that dataset; `complete_upload`'s `name` is then ignored and the dataset keeps its name. `complete_upload` returns `dataset` and `datasetVersion` once each, with the column names as a `columnNames` list. `qa_status` is informational and does not gate anything. `version_type` matters in one case: `submit_training_job` with an explicit `dataset_version_id` rejects a `raw` version. Omit `dataset_version_id` to train on the model version's own dataset.
+
 **Fallback when the host has no byte channel at all** (no egress and no file bridge): the agent saves the training file, hands it to you as a download, and points you at **[easydeploy.ai/model-builder](https://www.easydeploy.ai/model-builder)**. After you upload there, tell the agent the **dataset name you entered** or paste the **dataset URL** from the page — it resolves the dataset with `list_datasets` and confirms the row count before continuing. That upload is already registered as a dataset, so `complete_upload` is not used for it. Adding the allowlist entry above (where your plan allows it) avoids the detour.
+
+### Reading a model report
+
+`get_model_report` returns the report plus a structured `metrics` object (passed through unchanged from the API). Model search scores candidates with 10-fold cross-validation (stratified and shuffled on ROC-AUC for classifiers, shuffled on negative MSE for regressors; forward-chaining `TimeSeriesSplit` for a version created with `time_series_mode=true`), then refits the winner on all rows. There is no separate test set: accuracy, the confusion matrix, per-class precision/recall and in-sample ROC-AUC under `metrics.trainingFit` are training fit, and `metrics.crossValidation.score` is the out-of-sample estimate to rely on. `metrics.crossValidation.strategy` records which CV a run used (`time_series_split` for forward-chaining), and `metrics.warnings` flags anything to be careful quoting. The prose summary is written by an LLM and may use looser wording.
 
 ---
 
@@ -106,7 +112,8 @@ For self-hosting on Docker or a cloud provider, see [Remote MCP (HTTP)](#remote-
 
 ## What you get
 
-- **26 tools** covering projects, datasets (including the three upload channels), model versions, training jobs, predictions, and account status.
+- **27 tools** covering projects, datasets (including the three upload channels), model versions, training jobs, predictions, and account status.
+- **Tool annotations** on every tool (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so hosts can tell reads from writes. The 16 `get_*` / `list_*` tools are read-only; no tool deletes anything; only `upload_from_url` and `start_upload` (given a host `file`) make EasyDeploy fetch an external URL. `create_project` and `create_model` are create-or-update (they PATCH when an id is passed), so they are marked as non-idempotent writes. Renaming a dataset is its own tool, `update_dataset`; `get_dataset` is a pure read.
 - **stdio** transport for local clients, or **HTTP** with Streamable MCP on `/mcp` and **GET /healthz** for load balancers.
 - **Hardening:** HTTPS-only calls to the EasyDeploy API; optional `MCP_SERVICE_TOKEN` for the HTTP MCP surface; response fields trimmed where appropriate for agents.
 

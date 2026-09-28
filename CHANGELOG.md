@@ -15,11 +15,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`openai/fileParams` on `start_upload`** — an optional `file` parameter (`download_url`, `file_id`, `mime_type`, `file_name`) declared via tool `_meta`, so Codex and ChatGPT can hand a sandbox file straight to EasyDeploy. When present, `start_upload` calls from-url itself and returns the session in `RECEIVING`; the download URL is never echoed back to the model.
 - **`api_client.upload_from_url`** (`POST /uploads/from-url`, 30 s) and **`api_client.get_upload_status`** (`GET /uploads/{id}`, 15 s). Both surface the API's own error message text unchanged.
 - **Model-builder fallback documented in the tool descriptions and errors**: when a host offers no byte channel, the agent hands the file to the user as a download, points at <https://www.easydeploy.ai/model-builder>, then resolves the resulting dataset by the name or URL the user reports back rather than guessing.
+- **`update_dataset` tool** — renames a dataset or changes its description (`name` and/or `description`, at least one required). Replaces the write path that used to hide inside `get_dataset`.
+- **Tool annotations on every tool** (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) via FastMCP's `annotations=`. The 16 `get_*`/`list_*` tools are read-only and idempotent; every write is non-destructive; `update_dataset` is the only idempotent write; `upload_from_url` and `start_upload` (which fetches a host `file` URL) are the open-world tools. `dataset_type`, `version_type` and `qa_status` are `Literal` types, so their schemas list enums. `create_project` and `create_model` are create-or-update and marked non-idempotent. `start_upload` keeps its `openai/fileParams` meta.
+- **`get_model_report` documents validation and the `metrics` object.** The description now states how models are validated (10-fold CV — stratified shuffled on ROC-AUC for classifiers, shuffled on negative MSE for regressors, forward-chaining `TimeSeriesSplit` in time-series mode; winner refit on all rows; no separate test set; accuracy, confusion matrix, per-class precision/recall and in-sample ROC-AUC are training fit; the CV score is the out-of-sample estimate; the prose summary is LLM-written) and the shape of the structured `metrics` object (`taskType`, `crossValidation`, `trainingFit`, `additionalCv`, `warnings`, or `null` with `metricsUnavailableReason`). The MCP layer passes it through untouched, whether the API puts it in `data` or `meta`.
+- `get_training_status(wait=true)` adds `next_steps` when it times out: the job is still running, call again with the same `job_id`, do not resubmit.
 
 ### Changed
 
 - **`complete_upload` requires upload status `READY`**, not `UPLOADED` — the validator promotes the bytes before a dataset version is created. Other states return a 400 naming the state; poll `get_upload_status` first. Documented in the tool description.
-- Tool catalog is now **26 tools** (was 24).
+- Tool catalog is now **27 tools** (was 24): `upload_from_url`, `get_upload_status` and `update_dataset` are new.
+- **`get_dataset` is read-only.** Its `name` and `description` parameters are gone; use `update_dataset`.
+- **`complete_upload` output** returns the dataset version once (top-level `datasetVersion` with its `ui_url`); the duplicate nested `dataset.datasetVersion` is dropped.
+- **`columnNames` lists instead of `columnNamesJson` strings** in `complete_upload`, `get_dataset`, `get_dataset_version`, `create_dataset_version` and `list_dataset_versions` output. A value that does not parse to a list stays under `columnNamesJson` unchanged.
+- **`start_upload` returns `dataset_id` only when the caller passed one**, so the API's pre-assigned id for a new dataset is no longer mistaken for an existing dataset. Docstrings spell out the rule: omit `dataset_id` to create a new dataset; pass an existing one to add a version (the `complete_upload` name is then ignored).
+- Dataset-version docstrings state what the labels do: `qa_status` is informational and does not gate anything. `version_type` matters in one case: `submit_training_job` with an explicit `dataset_version_id` rejects a `raw` version. Omit `dataset_version_id` to train on the model version's own dataset. `submit_training_job` says the same. The "used by the QA pipeline" wording is gone.
+
+### Fixed
+
+- **Time-series wording.** `create_model_version` now says precisely what `time_series_mode` does — forward-chaining cross-validation (`TimeSeriesSplit`), each fold training on earlier periods and scoring on later ones — and points at `metrics.crossValidation.strategy` in `get_model_report`, which records the strategy a run used (`time_series_split`).
+- Removed stale-host debugging notes from the `submit_training_job` and `get_training_status` descriptions and the module docstring ("some hosts omit that tool…", "standard catalog is 26 tools").
 
 ## [0.2.0] - 2026-09-23
 

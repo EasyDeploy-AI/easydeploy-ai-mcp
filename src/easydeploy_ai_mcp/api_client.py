@@ -851,7 +851,8 @@ async def get_model_report(
     Pass a specific id from ``list_model_versions`` to pin a version.
 
     ``report_scope``: ``summary`` (default) = token-efficient ``summary`` block only; ``full`` = entire JSON.
-    The returned dict may include ``_resolvedModelVersionId`` and ``_reportScope`` from API meta.
+    The returned dict may include ``_resolvedModelVersionId`` and ``_reportScope`` from API meta,
+    plus the structured ``metrics`` object (or ``metricsUnavailableReason``) unchanged.
     """
     scope = report_scope.strip().lower() if report_scope else "summary"
     if scope not in ("summary", "full"):
@@ -881,6 +882,11 @@ async def get_model_report(
                 out["_resolvedModelVersionId"] = str(meta["modelVersionId"])
             if meta.get("reportScope") is not None:
                 out["_reportScope"] = str(meta["reportScope"])
+            # ``metrics`` / ``metricsUnavailableReason`` sit next to the report in
+            # ``data``; accept them from ``meta`` too, and never reshape them.
+            for key in ("metrics", "metricsUnavailableReason"):
+                if key not in out and key in meta:
+                    out[key] = meta[key]
             return out
         return data if data is not None else {}
 
