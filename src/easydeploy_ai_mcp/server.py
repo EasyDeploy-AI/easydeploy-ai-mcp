@@ -90,7 +90,31 @@ if _parsed_api.scheme != "https" or not _parsed_api.netloc:
 _API_KEY: str = os.environ.get("EDA_API_KEY", "")
 _UI_BASE_URL: str = os.environ.get("EDA_UI_BASE_URL", "https://easydeploy.ai").rstrip("/")
 
-mcp = FastMCP("EasyDeploy AI")
+# Sent to clients in the MCP initialize result. Hosts add it to the agent's
+# context, so it carries the division of labour the tool descriptions assume.
+SERVER_INSTRUCTIONS = """\
+You are the data scientist; EasyDeploy is the training, deployment and prediction platform. It runs model search, feature engineering and hyperparameter tuning, then trains, deploys and predicts. It does not clean data, derive targets, split data or evaluate on a holdout: that is your job.
+
+Before uploading:
+- Establish the decision the model supports and the target it predicts. Explore the data yourself: shape, types, missingness, target balance.
+- Drop identifiers and every column not knowable at prediction time. Write a one-sentence target definition.
+- Confirm data changes and dropped columns with the user before applying them.
+
+Split it yourself:
+- Stratified 80/20 for classification, chronological for time series. No entity in both files, no duplicate rows.
+- Any balancing such as SMOTE goes on the train file only; the test file stays real data.
+- Upload the files separately with complete_upload dataset_type "train" and "test" ("validation" is optional). Create the model version on the train dataset version only; EasyDeploy does not check the type for you.
+
+Reading results:
+- get_model_report: the cross-validation score is estimated inside the training file, and trainingFit metrics are in-sample. Neither is a holdout result.
+- Holdout validation: run_batch_prediction on the test dataset version, download the output via get_prediction, and compute the metrics yourself against the true labels. The output keeps every input column, the target included, in the original row order and adds prediction and probability_<class> columns.
+- Choose the decision threshold on that holdout: an F1 sweep for classifiers, the error margin for regressors. Present the holdout numbers as the model's performance.
+- Build dashboards, reports and scored lists only from real prediction output, never mock values.
+
+Getting files in: follow start_upload's next_steps. Never paste file contents into a tool.
+"""
+
+mcp = FastMCP("EasyDeploy AI", instructions=SERVER_INSTRUCTIONS)
 
 
 def _kw() -> dict:
@@ -465,6 +489,9 @@ async def start_upload(
     """
     Open an upload session and return the best byte channel for this host.
 
+    One session carries one file. Your train and test files (and an optional
+    validation file) are separate uploads, each with its own ``start_upload``.
+
     Pick a channel — file bytes must never travel through tool arguments or the
     conversation on any of them:
 
@@ -578,10 +605,9 @@ async def upload_from_url(upload_request_id: str, source_url: str) -> dict[str, 
       - Google Sheets and Google Drive share links set to **anyone with the link**
         (Sheets are exported as CSV).
       - OpenAI file links from a host file parameter.
-      - Other hosts on the EasyDeploy source allowlist, including EasyDeploy's own
-        upload hostname.
+      - Any other host on the EasyDeploy source allowlist.
 
-    EasyDeploy fetches the bytes itself. The file never passes through the model,
+    EasyDeploy fetches the bytes itself, up to 256 MB. The file never passes through the model,
     the conversation, or this tool's arguments — pass a URL, never file contents.
     Private, loopback, and metadata addresses are rejected, as is any host off the
     allowlist; the error explains which rule refused the URL.
@@ -690,7 +716,11 @@ async def complete_upload(
       existing dataset's id (the one given to start_upload) to add a new
       version to that dataset; ``name`` is then still required but ignored,
       and the dataset keeps its current name.
-    dataset_type: train | test | validation (default train).
+    dataset_type: train | test | validation (default train). You produce these
+      files by splitting the prepared data yourself: ``train`` is what the model
+      learns from, ``test`` is the holdout you score afterwards with
+      ``run_batch_prediction``, and ``validation`` is an optional extra holdout.
+      EasyDeploy stores the type as a label and never splits for you.
 
     **The upload session must be in status READY** — not ``UPLOADED``. READY means
     the validator has accepted and promoted the bytes. Any other state returns
@@ -913,6 +943,9 @@ async def create_model_version(
     Create a model version tied to a dataset version and target column.
     Then call submit_training_job with the returned model version id.
 
+    Pass the **train** dataset's version, never the test one: a test file that
+    reaches training is no longer a holdout. EasyDeploy does not check the type.
+
     Set time_series_mode=true and time_column when forecasting ordered periods
     (e.g. weekly business metrics). Time-series mode uses forward-chaining
     cross-validation (TimeSeriesSplit) instead of shuffled k-fold: each fold
@@ -1007,8 +1040,10 @@ async def get_model_report(
     There is no separate test set. Accuracy, the confusion matrix, per-class
     precision/recall and in-sample ROC-AUC are training fit (computed on the
     same rows the model learned from), not a holdout estimate. The CV score is
-    the out-of-sample estimate to rely on. The prose summary is written by an
-    LLM and may use looser wording than these numbers.
+    the report's out-of-sample estimate, but it is measured inside the training
+    file; the holdout estimate comes from scoring your own test file with
+    ``run_batch_prediction``, not from this report. The prose summary is
+    written by an LLM and may use looser wording than these numbers.
 
     **metrics** (returned next to the report, passed through unchanged):
     ``{taskType, crossValidation: {metric, score, strategy, folds,
@@ -1262,7 +1297,19 @@ async def run_batch_prediction(
 
     ``project_id`` and ``target_feature`` are auto-resolved from the model version
     record when omitted. ``dataset_version_id`` identifies both the input file and
-    the row count for credit billing.
+    the row count for credit billing (one prediction credit per row).
+
+    **Holdout validation:** score your **test** dataset version with its labels
+    still in it. The CSV you download via ``get_prediction`` is that file in its
+    original row order with every column kept (target and ids included), plus
+    ``prediction`` and, for classifiers, one ``probability_<class>`` column per
+    class (``probability_1`` is the positive class for a 0/1 target); compute
+    the holdout metrics and decision threshold yourself from it, since
+    EasyDeploy does not return them. For a string target the probability
+    columns are named by encoded class index (``probability_0``,
+    ``probability_1``, ... in sorted label order), not by label. The download
+    is capped at 9 MB, so keep test files small enough that their scored output
+    fits, or split the test set across several batches.
 
     Returns immediately by default (fire-and-poll). Use
     ``get_prediction(prediction_id)`` to check status (includes ``downloadReady``

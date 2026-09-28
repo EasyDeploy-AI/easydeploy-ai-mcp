@@ -44,6 +44,16 @@ We host the MCP endpoint. You add it once inside Claude; after you connect and s
 
 More detail and variants (for example a URL from your own deployment) are in [docs/claude-getting-started.md](docs/claude-getting-started.md).
 
+### You are the data scientist
+
+EasyDeploy searches models, engineers features, tunes hyperparameters, trains, deploys and predicts. It does not clean your data, define the target, split it, or check the model on data it never saw. The agent does that, and the server says so in its MCP `instructions`, which hosts load into the agent's context:
+
+1. **Prepare.** Agree the decision and the target with you, explore the data, drop identifiers and anything not known at prediction time, and write a one-sentence target definition. Data changes and dropped columns are confirmed with you before they are applied.
+2. **Split.** Stratified 80/20 for classification, chronological for time series, no entity in both files, no duplicates. Balancing such as SMOTE touches the train file only.
+3. **Upload and train.** The files go up separately, with `dataset_type` `train` and `test` (`validation` optional). The model version is created on the train dataset version only.
+4. **Validate on the holdout.** The report's cross-validation score is measured inside the training file and its training-fit metrics are in-sample. The real estimate comes from `run_batch_prediction` on the test dataset version: the downloaded CSV keeps every input column, the true label included, in the original row order and adds `prediction` and `probability_<class>` columns. The agent computes the metrics from it and picks the decision threshold (an F1 sweep for classifiers, the error margin for regressors).
+5. **Use real outputs.** Dashboards, reports and scored lists are built from real predictions, never mock values.
+
 ### Getting a training file into EasyDeploy
 
 `start_upload` opens an upload session and the agent picks the best byte channel the host offers. **File contents never travel through the conversation or through tool arguments on any channel** — the agent passes a URL or runs a `curl`, never the data itself.
@@ -52,7 +62,7 @@ More detail and variants (for example a URL from your own deployment) are in [do
 | --- | --- | --- |
 | **File parameter** | Hosts that support `openai/fileParams` (Codex, ChatGPT). `start_upload` declares `_meta: {"openai/fileParams": ["file"]}`, so the host hydrates a `file` argument with a download URL. No sandbox network needed. | `start_upload(..., file=…)` → session goes to `RECEIVING` → poll `get_upload_status` → `complete_upload` |
 | **Gateway PUT** (default) | Claude Code, Cowork, and claude.ai / Desktop sandboxes with egress. Max **6 MB** per file; the gateway answers **413** above that, and there is no chunking path. | `start_upload` → run the returned `curl_command` in bash → poll `get_upload_status` → `complete_upload` |
-| **Fetch from a share link** | The sandbox has no egress but the file is already at a shareable URL: a Google Sheets or Drive link set to **anyone with the link**, an OpenAI file link, or another allowlisted host. EasyDeploy fetches the bytes server-side. | `start_upload` → `upload_from_url(upload_request_id, source_url)` → poll `get_upload_status` → `complete_upload` |
+| **Fetch from a share link** | The sandbox has no egress but the file is already at a shareable URL: a Google Sheets or Drive link set to **anyone with the link**, an OpenAI file link, or another allowlisted host. EasyDeploy fetches the bytes server-side, up to **256 MB**. | `start_upload` → `upload_from_url(upload_request_id, source_url)` → poll `get_upload_status` → `complete_upload` |
 
 `get_upload_status` reports `URL_ISSUED → RECEIVING → UPLOADED → VALIDATING → READY | REJECTED → CONSUMED` (plus `EXPIRED`). **`complete_upload` requires `READY`** — every byte that becomes a dataset version passes the CSV validator first, and any other state returns a 400 naming what to do. On `REJECTED`, the `error` field says which check failed.
 
@@ -62,7 +72,7 @@ More detail and variants (for example a URL from your own deployment) are in [do
 
 ### Reading a model report
 
-`get_model_report` returns the report plus a structured `metrics` object (passed through unchanged from the API). Model search scores candidates with 10-fold cross-validation (stratified and shuffled on ROC-AUC for classifiers, shuffled on negative MSE for regressors; forward-chaining `TimeSeriesSplit` for a version created with `time_series_mode=true`), then refits the winner on all rows. There is no separate test set: accuracy, the confusion matrix, per-class precision/recall and in-sample ROC-AUC under `metrics.trainingFit` are training fit, and `metrics.crossValidation.score` is the out-of-sample estimate to rely on. `metrics.crossValidation.strategy` records which CV a run used (`time_series_split` for forward-chaining), and `metrics.warnings` flags anything to be careful quoting. The prose summary is written by an LLM and may use looser wording.
+`get_model_report` returns the report plus a structured `metrics` object (passed through unchanged from the API). Model search scores candidates with 10-fold cross-validation (stratified and shuffled on ROC-AUC for classifiers, shuffled on negative MSE for regressors; forward-chaining `TimeSeriesSplit` for a version created with `time_series_mode=true`), then refits the winner on all rows. There is no separate test set: accuracy, the confusion matrix, per-class precision/recall and in-sample ROC-AUC under `metrics.trainingFit` are training fit, and `metrics.crossValidation.score` is the report's out-of-sample estimate, measured inside the training file. The holdout estimate comes from scoring your own test file with `run_batch_prediction`, not from the report. `metrics.crossValidation.strategy` records which CV a run used (`time_series_split` for forward-chaining), and `metrics.warnings` flags anything to be careful quoting. The prose summary is written by an LLM and may use looser wording.
 
 ---
 
