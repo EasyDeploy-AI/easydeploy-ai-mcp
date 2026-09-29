@@ -44,14 +44,24 @@ We host the MCP endpoint. You add it once inside Claude; after you connect and s
 
 More detail and variants (for example a URL from your own deployment) are in [docs/claude-getting-started.md](docs/claude-getting-started.md).
 
+### Start here: `get_started`
+
+`get_started` returns the EasyDeploy data-science playbook, and the server's MCP `instructions` tell the agent to call it before any other EasyDeploy tool and again at the start of every new modeling task. Hosts cache tool descriptions and server instructions, and many never show the instructions to the model; a tool result is fetched live on every call. So the playbook lives in the tool's result, not in its description: the name and description stay fixed, and the content is updated with each release without anyone reconnecting.
+
+- `get_started()` returns the overview: the roles, the whole workflow with the tools at each step, and the hard rules.
+- `get_started(section=...)` returns one section: `prepare`, `split`, `upload`, `train`, `validate` or `predict`. `all` returns every section.
+- Each result carries `guide_version`, `updated`, the list of sections with a one-line summary each, and `next`, the section to read next.
+
+The content ships inside the package as Markdown, one file per section, in [`src/easydeploy_ai_mcp/guide/`](src/easydeploy_ai_mcp/guide/). The tool is read-only and makes no API call.
+
 ### You are the data scientist
 
-EasyDeploy searches models, engineers features, tunes hyperparameters, trains, deploys and predicts. It does not clean your data, define the target, split it, or check the model on data it never saw. The agent does that, and the server says so in its MCP `instructions`, which hosts load into the agent's context:
+EasyDeploy searches models, engineers features, tunes hyperparameters, trains, deploys and predicts. It does not clean your data, define the target, split it, or check the model on data it never saw. The agent does that, following the `get_started` playbook:
 
 1. **Prepare.** Agree the decision and the target with you, explore the data, drop identifiers and anything not known at prediction time from the training file, and write a one-sentence target definition. Ids can stay in test and scoring files: prediction ignores columns the model wasn't trained on and returns them in the output, which makes joining results back easy. Data changes and dropped columns are confirmed with you before they are applied.
 2. **Split.** Stratified 80/20 for classification, chronological for time series, no entity in both files, no duplicates. Balancing such as SMOTE touches the train file only.
 3. **Upload and train.** The files go up separately, with `dataset_type` `train` and `test` (`validation` optional). The model version is created on the train dataset version only.
-4. **Validate on the holdout.** The report's cross-validation score is measured inside the training file and its training-fit metrics are in-sample. The real estimate comes from `run_batch_prediction` on the test dataset version: the downloaded CSV keeps every input column, the true label included, in the original row order and adds `prediction` and `probability_<class>` columns. The agent computes the metrics from it and picks the decision threshold (an F1 sweep for classifiers, the error margin for regressors).
+4. **Validate on the holdout.** The report's cross-validation score is measured inside the training file and its training-fit metrics are in-sample. The real estimate comes from `run_batch_prediction` on the test dataset version: the downloaded CSV keeps every input column, the true label included, in the original row order and adds `prediction` and `probability_<class>` columns. The agent computes the metrics from it and picks the decision threshold from the cost of each kind of error (best F1 only when those costs are unknown), or reports the error margin for regressors.
 5. **Use real outputs.** Dashboards, reports and scored lists are built from real predictions, never mock values.
 
 ### Getting a training file into EasyDeploy
@@ -122,8 +132,8 @@ For self-hosting on Docker or a cloud provider, see [Remote MCP (HTTP)](#remote-
 
 ## What you get
 
-- **27 tools** covering projects, datasets (including the three upload channels), model versions, training jobs, predictions, and account status.
-- **Tool annotations** on every tool (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so hosts can tell reads from writes. The 16 `get_*` / `list_*` tools are read-only; no tool deletes anything; only `upload_from_url` and `start_upload` (given a host `file`) make EasyDeploy fetch an external URL. `create_project` and `create_model` are create-or-update (they PATCH when an id is passed), so they are marked as non-idempotent writes. Renaming a dataset is its own tool, `update_dataset`; `get_dataset` is a pure read.
+- **28 tools**: `get_started` (the playbook) plus tools covering projects, datasets (including the three upload channels), model versions, training jobs, predictions, and account status.
+- **Tool annotations** on every tool (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so hosts can tell reads from writes. `get_started` and the 16 other `get_*` / `list_*` tools are read-only; no tool deletes anything; only `upload_from_url` and `start_upload` (given a host `file`) make EasyDeploy fetch an external URL. `create_project` and `create_model` are create-or-update (they PATCH when an id is passed), so they are marked as non-idempotent writes. Renaming a dataset is its own tool, `update_dataset`; `get_dataset` is a pure read.
 - **stdio** transport for local clients, or **HTTP** with Streamable MCP on `/mcp` and **GET /healthz** for load balancers.
 - **Hardening:** HTTPS-only calls to the EasyDeploy API; optional `MCP_SERVICE_TOKEN` for the HTTP MCP surface; response fields trimmed where appropriate for agents.
 

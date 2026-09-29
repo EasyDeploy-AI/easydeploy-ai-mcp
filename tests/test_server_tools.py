@@ -27,10 +27,11 @@ async def test_eda_mcp_registered_tools_match_manifest(eda_mcp_server):
         tools = await client.list_tools()
     names = {t.name for t in tools}
     assert names == _eda_mod.EDA_MCP_TOOL_NAMES
-    assert len(names) == 27
+    assert len(names) == 28
 
 
 _READ_TOOLS = {
+    "get_started",
     "get_account_status",
     "list_projects",
     "get_project",
@@ -1179,22 +1180,21 @@ async def test_eda_mcp_choice_params_list_enums(eda_mcp_server, tool, param, enu
 
 
 @pytest.mark.asyncio
-async def test_eda_mcp_initialize_carries_data_scientist_instructions(eda_mcp_server):
+async def test_eda_mcp_initialize_carries_the_compact_core(eda_mcp_server):
     async with Client(eda_mcp_server) as client:
         init = client.initialize_result
     assert init is not None
     text = init.instructions
     assert text and text == _eda_mod.SERVER_INSTRUCTIONS
+    # The playbook moved to get_started; the instructions point there first.
+    assert text.startswith("Call get_started before any other EasyDeploy tool")
     assert "You are the data scientist" in text
-    # The split is the agent's job, and each file is uploaded with its type.
-    assert "80/20" in text and "chronological" in text
     assert '"train"' in text and '"test"' in text
     assert "train dataset version only" in text
-    # The holdout estimate comes from scoring the test file, not from the report.
-    assert "run_batch_prediction on the test dataset version" in text
-    assert "true labels" in text
-    assert "never mock values" in text
-    assert "start_upload's next_steps" in text
+    assert "run_batch_prediction" in text
+    assert "Never mock data" in text
+    assert "Never paste file contents into a tool" in text
+    assert len(text.split()) < 200
 
 
 @pytest.mark.asyncio
@@ -1227,3 +1227,131 @@ async def test_eda_mcp_upload_from_url_allowlist_and_cap_wording(eda_mcp_server)
     assert "256 MB" in desc
     blob = " ".join(t.description or "" for t in tools) + _eda_mod.SERVER_INSTRUCTIONS
     assert "512" not in blob
+
+
+# ── get_started (the playbook) ───────────────────────────────────────────────
+
+from easydeploy_ai_mcp import guide as _guide  # noqa: E402
+
+_GUIDE_SECTIONS = ["overview", "prepare", "split", "upload", "train", "validate", "predict"]
+_WORD_BUDGET = {name: 800 for name in _GUIDE_SECTIONS} | {"overview": 600}
+# Result fields and example values the guide names in backticks that are neither
+# tools nor tool parameters.
+_GUIDE_NON_TOOL_NAMES = {
+    "ui_url", "next_steps", "curl_command", "download_url", "timed_out",
+    "probability_0", "probability_1",
+}
+
+
+@pytest.mark.asyncio
+async def test_get_started_is_registered_read_only_with_a_stable_trigger(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    tool = next(t for t in tools if t.name == "get_started")
+    assert tools[0].name == "get_started"
+    ann = tool.annotations
+    assert ann.readOnlyHint is True and ann.idempotentHint is True
+    assert ann.destructiveHint is False and ann.openWorldHint is False
+    desc = tool.description
+    assert "before any other EasyDeploy tool" in desc
+    assert "start of every" in desc and "new modeling task" in desc
+    assert "updated on the server" in desc and "re-read it" in desc
+    schema = tool.inputSchema["properties"]["section"]
+    assert schema["enum"] == _GUIDE_SECTIONS + ["all"]
+    assert schema["default"] == "overview"
+
+
+@pytest.mark.parametrize("section", _GUIDE_SECTIONS)
+@pytest.mark.asyncio
+async def test_get_started_sections_fit_their_budgets(eda_mcp_server, section):
+    async with Client(eda_mcp_server) as client:
+        result = await client.call_tool("get_started", {"section": section})
+    assert not result.is_error
+    data = result.data
+    assert data["section"] == section
+    assert data["guide_version"] == _guide.GUIDE_RELEASE["guide_version"]
+    assert data["updated"] == _guide.GUIDE_RELEASE["updated"]
+    assert data["content"].strip()
+    words = len(data["content"].split())
+    assert words <= _WORD_BUDGET[section], (section, words)
+    assert [s["name"] for s in data["sections"]] == _GUIDE_SECTIONS
+    assert all(s["summary"] for s in data["sections"])
+    following = _GUIDE_SECTIONS.index(section) + 1
+    if following < len(_GUIDE_SECTIONS):
+        assert f'"{_GUIDE_SECTIONS[following]}"' in data["next"]
+    else:
+        assert "overview" in data["next"]
+
+
+@pytest.mark.asyncio
+async def test_get_started_defaults_to_overview_and_all_has_every_section(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        default = await client.call_tool("get_started", {})
+        everything = await client.call_tool("get_started", {"section": "all"})
+    assert default.data["section"] == "overview"
+    assert default.data["content"] == _guide.read_section("overview")
+    content = everything.data["content"]
+    for name in _GUIDE_SECTIONS:
+        assert _guide.read_section(name) in content, name
+    assert everything.data["next"]
+
+
+@pytest.mark.asyncio
+async def test_get_started_rejects_an_unknown_section(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        result = await client.call_tool(
+            "get_started", {"section": "deploy"}, raise_on_error=False
+        )
+    assert result.is_error
+
+
+def test_guide_covers_the_data_science_essentials():
+    text = _guide.read_all()
+    lower = text.lower()
+    assert "leakage" in lower
+    assert "train file" in lower and "test file" in lower
+    assert '"test"' in text  # dataset_type "test"
+    assert "dataset_type" in text
+    assert "run_batch_prediction" in text
+    assert "threshold" in lower
+    assert "never assume 0.5" in lower
+    # Platform facts the playbook relies on.
+    assert "10 or fewer distinct values" in text
+    assert "9 MB" in text and "6 MB" in text and "256 MB" in text
+    assert "no separate deployment step" in lower
+
+
+@pytest.mark.asyncio
+async def test_guide_names_only_real_tools(eda_mcp_server):
+    import re
+
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    tool_names = {t.name for t in tools}
+    params = {p for t in tools for p in (t.inputSchema.get("properties") or {})}
+
+    text = _guide.read_all()
+    pointers = " ".join(_guide.next_after(s) for s in _GUIDE_SECTIONS + ["all"])
+    # Anything written as a call, name(...), must be a registered tool.
+    called = set(re.findall(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\(", text + pointers))
+    assert "get_started" in called
+    assert called <= tool_names, called - tool_names
+    # Bare names shaped like tools (verb_noun) must be tools or parameters too.
+    verbs = r"(?:get|list|create|run|submit|start|upload|complete|update|deploy|delete)"
+    bare = set(re.findall(rf"\b({verbs}_[a-z_]+)\b", text + pointers))
+    assert bare <= tool_names | params, bare - tool_names - params
+    # Every backticked snake_case name is a tool, a tool parameter, or a known
+    # result field; a misspelled or retired tool name fails here.
+    ticked = set(re.findall(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`", text))
+    unknown = ticked - tool_names - params - _GUIDE_NON_TOOL_NAMES
+    assert not unknown, unknown
+    # The workflow map in the overview names the core tools.
+    overview = _guide.read_section("overview")
+    for name in (
+        "list_projects", "start_upload", "get_upload_status", "complete_upload",
+        "create_model_version", "submit_training_job", "get_model_report",
+        "run_batch_prediction", "get_prediction", "run_prediction",
+    ):
+        assert f"`{name}`" in overview, name
+    # Guard the guide against tools that do not exist in this server.
+    assert "deploy_endpoint" not in text

@@ -34,7 +34,8 @@ through the model or through tool arguments on any of them:
   and resolve it with list_datasets. That upload is already a dataset — do not
   call complete_upload for it.
 
-Tool catalog (27 tools; every tool carries MCP annotations — readOnlyHint etc.):
+Tool catalog (28 tools; every tool carries MCP annotations — readOnlyHint etc.):
+  Start here: get_started (the data-science playbook; content ships in guide/*.md)
   Account: get_account_status
   Projects: list_projects, get_project, create_project (pass project_id to update)
   Datasets: list_datasets, get_dataset (read-only), update_dataset, start_upload,
@@ -65,7 +66,7 @@ from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict
 
-from . import api_client
+from . import api_client, guide
 from .credentials import resolve_bearer_token
 from .defaults import DEFAULT_EDA_API_BASE
 
@@ -90,28 +91,17 @@ if _parsed_api.scheme != "https" or not _parsed_api.netloc:
 _API_KEY: str = os.environ.get("EDA_API_KEY", "")
 _UI_BASE_URL: str = os.environ.get("EDA_UI_BASE_URL", "https://easydeploy.ai").rstrip("/")
 
-# Sent to clients in the MCP initialize result. Hosts add it to the agent's
-# context, so it carries the division of labour the tool descriptions assume.
+# Sent to clients in the MCP initialize result. Many hosts cache it or never show
+# it to the model, so it stays a short core: the playbook itself is returned live
+# by get_started (see guide/), where it can change without a reconnect.
 SERVER_INSTRUCTIONS = """\
-You are the data scientist; EasyDeploy is the training, deployment and prediction platform. It runs model search, feature engineering and hyperparameter tuning, then trains, deploys and predicts. It does not clean data, derive targets, split data or evaluate on a holdout: that is your job.
+Call get_started before any other EasyDeploy tool, and again at the start of every new modeling task. It returns the current data-science playbook, which is updated on the server, so re-read it rather than relying on memory.
 
-Before uploading:
-- Establish the decision the model supports and the target it predicts. Explore the data yourself: shape, types, missingness, target balance.
-- In the train file, drop identifiers and every column not knowable at prediction time: training uses every non-target column as a feature. Write a one-sentence target definition.
-- Confirm data changes and dropped columns with the user before applying them.
-
-Split it yourself:
-- Stratified 80/20 for classification, chronological for time series. No entity in both files, no duplicate rows.
-- Any balancing such as SMOTE goes on the train file only; the test file stays real data.
-- Upload the files separately with complete_upload dataset_type "train" and "test" ("validation" is optional). Create the model version on the train dataset version only; EasyDeploy does not check the type for you.
-
-Reading results:
-- get_model_report: the cross-validation score is estimated inside the training file, and trainingFit metrics are in-sample. Neither is a holdout result.
-- Holdout validation: run_batch_prediction on the test dataset version, download the output via get_prediction, and compute the metrics yourself against the true labels. The output keeps every input column, the target included, in the original row order and adds prediction and probability_<class> columns. Keep ids in test and scoring files: prediction uses only the columns the model was trained on and ignores the rest, so ids ride along for joining results back.
-- Choose the decision threshold on that holdout: an F1 sweep for classifiers, the error margin for regressors. Present the holdout numbers as the model's performance.
-- Build dashboards, reports and scored lists only from real prediction output, never mock values.
-
-Getting files in: follow start_upload's next_steps. Never paste file contents into a tool.
+You are the data scientist; EasyDeploy trains, deploys and predicts. The rules that matter most:
+- No leakage: training uses every column except the target as a feature, so drop identifiers and anything not known at prediction time from the train file.
+- Split train and test yourself before any balancing, upload them separately (dataset_type "train" and "test"), and train on the train dataset version only.
+- Judge the model on the test file: score it with run_batch_prediction and compute the metrics yourself. The training report's numbers come from the training file.
+- Confirm data changes with the user. Never mock data. Never paste file contents into a tool.
 """
 
 mcp = FastMCP("EasyDeploy AI", instructions=SERVER_INSTRUCTIONS)
@@ -302,6 +292,39 @@ def _write(*, idempotent: bool, open_world: bool = False) -> ToolAnnotations:
         idempotentHint=idempotent,
         openWorldHint=open_world,
     )
+
+
+# ── Start here ─────────────────────────────────────────────────────────────────
+
+GuideSection = Literal[
+    "overview", "prepare", "split", "upload", "train", "validate", "predict", "all",
+]
+
+
+# The name and description of this tool are a stable trigger; hosts cache them.
+# What changes between releases is the content it returns (guide/*.md).
+@mcp.tool(annotations=_READ_ONLY)
+def get_started(section: GuideSection = "overview") -> dict[str, Any]:
+    """
+    Call this before any other EasyDeploy tool, and again at the start of every
+    new modeling task. It returns the current EasyDeploy data-science playbook:
+    how to prepare leakage-free training data, keep an honest test file, upload,
+    train, validate on the holdout and use the model for predictions.
+
+    The playbook is updated on the server, so re-read it instead of relying on
+    memory. ``section`` picks one part (overview, prepare, split, upload, train,
+    validate, predict) or ``all``; the default is overview. The result lists
+    every section and says which one to read next.
+    """
+    content = guide.read_all() if section == "all" else guide.read_section(section)
+    return {
+        "guide_version": guide.GUIDE_RELEASE["guide_version"],
+        "updated": guide.GUIDE_RELEASE["updated"],
+        "section": section,
+        "content": content,
+        "sections": [{"name": name, "summary": summary} for name, summary in guide.SECTIONS],
+        "next": guide.next_after(section),
+    }
 
 
 # ── Account ────────────────────────────────────────────────────────────────────
@@ -1140,7 +1163,8 @@ async def submit_training_job(
     web UI). This is the most reliable approach across MCP hosts.
 
     Or pass the returned ``jobId`` to ``get_training_status`` with ``wait=true`` to block
-    until the job finishes (typical 2–3 min).
+    until the job finishes. Run time depends on the plan and the data, from minutes
+    to several hours.
 
     **dataset_version_id** can be omitted when the model version was created with
     ``create_model_version`` in the same flow — the backend resolves target_feature,
@@ -1177,8 +1201,8 @@ async def get_training_status(
 
     Set **wait=true** to block until the job reaches a terminal state (COMPLETE or
     FAILED). Polls every ``poll_interval_seconds`` (default 10 s) for up to
-    ``timeout_seconds`` (default 180 s / 3 min). Typical training runs finish in
-    2-3 minutes. If the timeout expires, the last polled status is returned with
+    ``timeout_seconds`` (default 180 s / 3 min). Training can take from minutes to
+    several hours depending on the plan and the data. If the timeout expires, the last polled status is returned with
     ``timed_out: true`` and ``next_steps``: the job is still running, so call this
     tool again with the same job_id — do not resubmit the training job.
     """
@@ -1236,8 +1260,11 @@ async def run_prediction(
     Run a single ad-hoc prediction against a trained model version.
 
     ``project_id`` and ``target_feature`` are auto-resolved from the model version
-    record when omitted. By default waits and returns the result inline (label +
-    probability). Set ``wait_for_result=false`` to return immediately with prediction_id.
+    record when omitted. By default waits and returns the predicted label or value
+    inline. It returns no probability, so the model's default rule decides the label;
+    when a decision depends on a threshold you chose, score the records with
+    ``run_batch_prediction``, whose output has probability columns. Set
+    ``wait_for_result=false`` to return immediately with prediction_id.
     """
     body: dict[str, Any] = {"modelVersionId": model_version_id, "input": input_data}
     if project_id.strip():
@@ -1419,6 +1446,7 @@ async def list_predictions(project_id: str = "") -> list[dict[str, Any]]:
 
 EDA_MCP_TOOL_NAMES: frozenset[str] = frozenset(
     {
+        "get_started",
         "get_account_status",
         "list_projects",
         "get_project",

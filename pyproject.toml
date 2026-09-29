@@ -54,6 +54,10 @@ Issues = "https://github.com/easydeploy-ai/easydeploy-ai-mcp/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The get_started playbook ships as Markdown next to its loader.
+[tool.setuptools.package-data]
+"easydeploy_ai_mcp.guide" = ["*.md"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

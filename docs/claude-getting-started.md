@@ -58,14 +58,18 @@ The domain allowlist UI is available on **paid** Claude plans.
 
 ---
 
+## Start here: the `get_started` playbook
+
+The EasyDeploy connector has 28 tools. The first one Claude calls is `get_started`: it returns the EasyDeploy data-science playbook, step by step, from framing the problem to using the model's predictions. Claude calls it before any other EasyDeploy tool and again whenever you start a new modeling task, and it can ask for a single step (`prepare`, `split`, `upload`, `train`, `validate`, `predict`). The playbook is updated on EasyDeploy's side, so Claude always reads the current version; you do not need to reconnect the connector to pick up changes.
+
 ## You are the data scientist
 
-EasyDeploy finds the model, engineers features, tunes it, trains it, deploys it and runs predictions. It does not clean your data, define what to predict, split the data, or test the model on rows it never saw. Claude does those parts, and the EasyDeploy server tells it so when it connects:
+EasyDeploy finds the model, engineers features, tunes it, trains it, deploys it and runs predictions. It does not clean your data, define what to predict, split the data, or test the model on rows it never saw. Claude does those parts, following the `get_started` playbook:
 
 1. **Prepare the data.** Claude agrees with you on the decision and the target, explores the data, removes identifiers and anything you would not know at prediction time from the training file, and writes the target down in one sentence. Ids can stay in the test file and in files you score later: predictions ignore them and hand them back, so results are easy to match to your records. It asks you before changing data or dropping columns.
 2. **Split it.** A stratified 80/20 split for classification, or a split by date for time series. The same customer (or other entity) never lands in both files, and there are no duplicates. Balancing such as SMOTE is applied to the train file only.
 3. **Upload and train.** The train and test files are uploaded separately, marked `train` and `test` (a `validation` file is optional). The model trains on the train file only.
-4. **Check it on the test file.** The training report's cross-validation score is measured inside the training file, and its accuracy and confusion matrix are measured on rows the model learned from. For a real estimate Claude scores the test file with `run_batch_prediction`, downloads the predictions (every original column, the true answer included, in the same row order, plus `prediction` and `probability_<class>` columns), works out the metrics, and picks a decision threshold: an F1 sweep for classifiers, the error margin for regressors. That is the performance it reports to you.
+4. **Check it on the test file.** The training report's cross-validation score is measured inside the training file, and its accuracy and confusion matrix are measured on rows the model learned from. For a real estimate Claude scores the test file with `run_batch_prediction`, downloads the predictions (every original column, the true answer included, in the same row order, plus `prediction` and `probability_<class>` columns), works out the metrics, and picks a decision threshold from what each kind of mistake costs you (or reports the error margin for regressors). That is the performance it reports to you, with a plain go or no-go.
 5. **Use real predictions.** Any dashboard, report or scored list comes from real prediction output, never made-up values.
 
 ---
