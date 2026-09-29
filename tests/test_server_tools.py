@@ -1355,3 +1355,27 @@ async def test_guide_names_only_real_tools(eda_mcp_server):
         assert f"`{name}`" in overview, name
     # Guard the guide against tools that do not exist in this server.
     assert "deploy_endpoint" not in text
+
+
+@pytest.mark.asyncio
+async def test_get_started_prepares_raw_data_before_any_upload(eda_mcp_server):
+    """A raw-data link is a source to download, never a file to upload as-is.
+
+    A Codex run handed a Google Sheets link uploaded the whole sheet as a
+    train dataset before exploring or splitting it. The playbook must say to
+    get the data into the agent's own environment first, and that
+    upload_from_url is only for files that are already prepared.
+    """
+    async with Client(eda_mcp_server) as client:
+        overview = (await client.call_tool("get_started", {"section": "overview"})).data["content"]
+        prepare = (await client.call_tool("get_started", {"section": "prepare"})).data["content"]
+        upload = (await client.call_tool("get_started", {"section": "upload"})).data["content"]
+
+    assert "Get the raw data into your own environment" in overview
+    assert "never upload the raw file" in overview
+    assert "Prepare before you upload" in overview
+    assert "Get the raw data where you can work on it" in prepare
+    assert "export?format=csv" in prepare
+    assert "ask the user to attach the file" in prepare
+    assert "only for prepared files" in upload
+    assert "a link to raw data is a source to download and prepare first" in upload

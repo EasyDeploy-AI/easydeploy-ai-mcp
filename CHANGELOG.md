@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Playbook 1.1: agents get raw data into their own environment (download a share link, read an attachment, or ask the user to attach it) and prepare and split it before any upload. `upload_from_url` is described as the channel for prepared files only. Tool descriptions and server instructions are unchanged, so hosts pick this up without a refresh.
+
 - The playbook and `run_batch_prediction` say ids belong out of the training file but can stay in test and scoring files, since prediction ignores columns the model wasn't trained on and returns them in the output.
 
 - **`complete_upload` requires upload status `READY`**, not `UPLOADED` — the validator promotes the bytes before a dataset version is created. Other states return a 400 naming the state; poll `get_upload_status` first. Documented in the tool description.
