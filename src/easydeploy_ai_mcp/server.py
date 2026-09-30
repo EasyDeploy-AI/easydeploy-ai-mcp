@@ -29,10 +29,11 @@ through the model or through tool arguments on any of them:
      → poll get_upload_status until READY → complete_upload.
 
   Final fallback when the host has neither egress nor a file bridge: hand the
-  training file to the user as a download, send them to
-  https://www.easydeploy.ai/model-builder, then ask for the dataset name or URL
-  and resolve it with list_datasets. That upload is already a dataset — do not
-  call complete_upload for it.
+  training file to the user as a download and follow the ``fallback`` string in
+  the start_upload result, which carries the API's stage-aware model-builder URL
+  (for example https://www.easydeploy.ai/model-builder). Then ask for the
+  dataset name or URL and resolve it with list_datasets. That upload is already
+  a dataset — do not call complete_upload for it.
 
 Tool catalog (28 tools; every tool carries MCP annotations — readOnlyHint etc.):
   Start here: get_started (the data-science playbook; content ships in guide/*.md)
@@ -457,7 +458,8 @@ async def update_dataset(
     return data
 
 
-_MODEL_BUILDER_URL = "https://www.easydeploy.ai/model-builder"
+# Only an example: the API returns the stage-aware model-builder URL in ``fallback``.
+_MODEL_BUILDER_EXAMPLE_URL = "https://www.easydeploy.ai/model-builder"
 
 
 def _complete_upload_args(project_id: str, upload_request_id: str, dataset_id: str) -> str:
@@ -483,7 +485,9 @@ def _gateway_runbook(project_id: str, upload_request_id: str, dataset_id: str) -
         "Google Sheets or Drive link set to anyone-with-link, or a file link this host "
         f"provides), call upload_from_url with upload_request_id='{upload_request_id}' and "
         "that URL. Otherwise save the training file, give it to the user as a download, and "
-        f"tell them to upload it at {_MODEL_BUILDER_URL}. Mention that enabling network "
+        "send them to the web model builder using the fallback string in this start_upload "
+        "result, which carries the model-builder URL for this environment (for example "
+        f"{_MODEL_BUILDER_EXAMPLE_URL}). Mention that enabling network "
         "access for this host, where their plan allows it, avoids the detour next time.\n"
         "3. After a model-builder upload, ask the user for the dataset name they entered or "
         "the dataset URL shown on the page. Resolve it with list_datasets (match the name) "
@@ -533,7 +537,10 @@ async def start_upload(
     ``upload_request_id``.
 
     The returned ``next_steps`` is the ordered runbook, including the
-    model-builder fallback for hosts with no byte channel at all.
+    model-builder fallback for hosts with no byte channel at all. For that
+    fallback, use the ``fallback`` string in this result: the API returns the
+    model-builder URL for this environment (for example
+    https://www.easydeploy.ai/model-builder), so do not hard-code one.
 
     **dataset_id:** omit it to create a new dataset when ``complete_upload``
     runs. Pass an existing dataset's id to add a new version to that dataset
@@ -636,7 +643,9 @@ async def upload_from_url(upload_request_id: str, source_url: str) -> dict[str, 
     allowlist; the error explains which rule refused the URL.
 
     Returns the session in ``RECEIVING``. A 409 means the session already received
-    bytes or expired — call ``start_upload`` again for a fresh one.
+    bytes or expired — call ``start_upload`` again for a fresh one. If no channel
+    works at all, follow the ``fallback`` string from the ``start_upload`` result
+    (the web model builder; for example https://www.easydeploy.ai/model-builder).
     """
     rid = upload_request_id.strip()
     if not rid:
@@ -684,8 +693,8 @@ _UPLOAD_STATUS_NEXT_STEPS: dict[str, str] = {
     ),
     "CONSUMED": (
         "This upload is already registered as a dataset version. Use "
-        "list_dataset_versions (or get_dataset) to work with it; do not call "
-        "complete_upload again."
+        "list_dataset_versions (or get_dataset) to work with it; there is no need to "
+        "call complete_upload again (a repeat call only returns that same version)."
     ),
 }
 
@@ -696,8 +705,11 @@ async def get_upload_status(upload_request_id: str) -> dict[str, Any]:
     Poll an upload session by the ``upload_request_id`` from ``start_upload``.
 
     ``status`` is one of URL_ISSUED, RECEIVING, UPLOADED, VALIDATING, READY,
-    REJECTED, CONSUMED, EXPIRED. Every channel (gateway PUT, host file parameter,
-    fetch-from-URL) reports through this one tool.
+    REJECTED, CONSUMED, EXPIRED. It reports on sessions opened by ``start_upload``,
+    and every channel that feeds one (gateway PUT, host file parameter,
+    ``upload_from_url``) reports through this one tool. Files uploaded through the
+    web model builder are not visible here — the user registers those in the web
+    app; find them with ``list_datasets``.
 
     ``complete_upload`` only accepts **READY** — poll here first. On REJECTED, the
     ``error`` field names the validation check that failed; fix the file and start
@@ -746,15 +758,19 @@ async def complete_upload(
       EasyDeploy stores the type as a label and never splits for you.
 
     **The upload session must be in status READY** — not ``UPLOADED``. READY means
-    the validator has accepted and promoted the bytes. Any other state returns
-    **400** naming the current state and what to do: ``RECEIVING`` / ``UPLOADED`` /
-    ``VALIDATING`` are still in flight, ``REJECTED`` failed validation, ``EXPIRED``
-    needs a new ``start_upload``, ``CONSUMED`` is already a dataset version. Call
-    ``get_upload_status`` first and wait for READY instead of calling this tool on
-    a guess.
+    the validator has accepted and promoted the bytes. ``RECEIVING`` / ``UPLOADED`` /
+    ``VALIDATING`` (still in flight), ``REJECTED`` (failed validation) and
+    ``EXPIRED`` (needs a new ``start_upload``) return **400** naming the current
+    state and what to do. Call ``get_upload_status`` first and wait for READY
+    instead of calling this tool on a guess.
 
-    A file the user uploaded through https://www.easydeploy.ai/model-builder is
-    already a dataset — resolve it with ``list_datasets`` rather than calling this.
+    Retrying is safe: if the session is already ``CONSUMED`` (an earlier call
+    succeeded), the API returns the existing dataset version instead of an error.
+    A **409** means another ``complete_upload`` for the same session is still in
+    progress — wait a few seconds and call again.
+
+    A file the user uploaded through the web model builder is already a dataset —
+    resolve it with ``list_datasets`` rather than calling this.
 
     Returns ``dataset`` (id, name, ui_url) and ``datasetVersion`` once, at the
     top level, with its ``ui_url`` and ``columnNames`` as a list.
@@ -859,7 +875,9 @@ async def create_dataset_version(
 
     **Create** (register an S3 file as a new version):
       Required: ``version_type`` (raw | qa_cleaned | training), ``file_url`` (s3:// URL),
-      ``qa_metadata`` (freeform JSON with QA results).
+      ``qa_metadata`` (freeform JSON with QA results). ``file_url`` must point to a
+      file under your own storage prefix ``users/{userId}/``; the API rejects any
+      other location with 403.
 
     **Update** (change qa_status on an existing version):
       Required: ``version_id``, ``qa_status`` (pending | in_progress | ready | blocked).
