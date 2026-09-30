@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tool wording follow-up for backend PR #88** (wording only, no behaviour change; playbook 1.2):
   - `complete_upload`: a retried call on a session that is already `CONSUMED` returns the existing dataset version instead of an error; a 409 means another `complete_upload` for the same session is still in progress, so wait a few seconds and retry.
   - `get_upload_status`: states that it covers sessions opened by `start_upload` (and fed by `upload_from_url` or a host file), and that files uploaded through the web model builder are not visible through it — the user registers those in the web app.
-  - `create_dataset_version`: `file_url` must point to a file under the caller's own storage prefix `users/{userId}/`; the API rejects any other location with 403.
+  - `create_dataset_version`: `file_url` must point to a file under the caller's own storage prefix `users/{userId}/`; the API rejects any other location with 400.
   - Model-builder fallback: `start_upload`'s runbook and description, `upload_from_url`, the module docs, the `upload` playbook section, README and the Claude getting-started guide tell agents to use the `fallback` string from the `start_upload` result, which carries the API's stage-aware model-builder URL, and cite www.easydeploy.ai/model-builder only as an example.
 
 - Playbook 1.1: agents get raw data into their own environment (download a share link, read an attachment, or ask the user to attach it) and prepare and split it before any upload. `upload_from_url` is described as the channel for prepared files only. Tool descriptions and server instructions are unchanged, so hosts pick this up without a refresh.
@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed stale-host debugging notes from the `submit_training_job` and `get_training_status` descriptions and the module docstring ("some hosts omit that tool…", "standard catalog is 26 tools").
 - **`upload_from_url` allowlist wording.** The description no longer claims the source allowlist includes EasyDeploy's own upload hostname. It does not: the default list is OpenAI file storage and Google Drive/Sheets.
 - **From-URL size cap.** `upload_from_url`, the README and the Claude guide state the fetch cap as 256 MB.
+- **`create_dataset_version` no longer drops the first segment of a bare key.** It used to treat the first path segment of every `file_url` as the bucket, so a bare key such as `users/abc/projects/p/datasets/d/v1/f.csv` lost its `users/` prefix and the API rejected it. `file_url` now accepts `s3://{bucket}/{key}` (bucket dropped, as before) or a bare key that starts with `users/` (used unchanged); anything else, such as an https URL or a key with another prefix, fails before the API call with an error telling the agent to pass the s3:// URL or the `s3Key` that `complete_upload` (`datasetVersion.s3Key`) or `get_dataset_version` (`s3Key`) returns.
 
 ## [0.2.0] - 2026-09-23
 

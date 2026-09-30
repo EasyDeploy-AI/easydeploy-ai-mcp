@@ -860,6 +860,29 @@ async def get_dataset_version(project_id: str, dataset_id: str, version_id: str)
     return item
 
 
+def _dataset_version_s3_key(file_url: str) -> str:
+    """Turn ``create_dataset_version``'s ``file_url`` into the API's ``s3Key``.
+
+    Accepts ``s3://{bucket}/{key}`` (the bucket is dropped) or a bare key that
+    already starts with ``users/`` (used unchanged). Anything else raises
+    ValueError rather than guessing which part is the bucket.
+    """
+    value = file_url.strip()
+    if value.startswith("s3://"):
+        bucket, _, key = value[len("s3://"):].partition("/")
+        if bucket and key:
+            return key
+    elif value.startswith("users/"):
+        return value
+    raise ValueError(
+        f"file_url {value!r} is not a dataset file location. Pass either the "
+        "s3:// URL of the file (s3://{bucket}/users/{userId}/...) or its bare "
+        "S3 key starting with users/{userId}/: the s3Key field of the dataset "
+        "version, which complete_upload returns as datasetVersion.s3Key and "
+        "get_dataset_version returns as s3Key."
+    )
+
+
 @mcp.tool(annotations=_write(idempotent=False))
 async def create_dataset_version(
     project_id: str,
@@ -874,10 +897,15 @@ async def create_dataset_version(
     Create or update a dataset version.
 
     **Create** (register an S3 file as a new version):
-      Required: ``version_type`` (raw | qa_cleaned | training), ``file_url`` (s3:// URL),
-      ``qa_metadata`` (freeform JSON with QA results). ``file_url`` must point to a
-      file under your own storage prefix ``users/{userId}/``; the API rejects any
-      other location with 403.
+      Required: ``version_type`` (raw | qa_cleaned | training), ``file_url``,
+      ``qa_metadata`` (freeform JSON with QA results). ``file_url`` accepts either
+      the file's s3:// URL (``s3://{bucket}/users/{userId}/...``) or its bare S3
+      key starting with ``users/{userId}/`` — the ``s3Key`` field that
+      ``complete_upload`` returns as ``datasetVersion.s3Key`` and
+      ``get_dataset_version`` returns as ``s3Key``. Any other form (an https URL,
+      a key with another prefix) is refused before calling the API. The file must
+      be under your own storage prefix ``users/{userId}/``; the API rejects any
+      other location with 400.
 
     **Update** (change qa_status on an existing version):
       Required: ``version_id``, ``qa_status`` (pending | in_progress | ready | blocked).
@@ -904,9 +932,7 @@ async def create_dataset_version(
 
     if not version_type.strip() or not file_url.strip():
         raise ValueError("version_type and file_url are required to create a dataset version")
-    s3_key = file_url.split("s3://", 1)[-1]
-    if "/" in s3_key:
-        s3_key = s3_key.split("/", 1)[1]
+    s3_key = _dataset_version_s3_key(file_url)
     body: dict[str, Any] = {
         "s3Key": s3_key,
         "version_type": version_type,
