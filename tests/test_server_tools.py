@@ -605,7 +605,9 @@ async def test_eda_mcp_start_upload_next_steps_is_the_runbook(eda_mcp_server):
     assert "413" in steps
     assert "upload_from_url" in steps
     assert "get_upload_status" in steps
-    assert "https://www.easydeploy.ai/model-builder" in steps
+    # The runbook defers to the API's stage-aware fallback; the public URL is only an example.
+    assert "fallback string in this start_upload result" in steps
+    assert "for example https://www.easydeploy.ai/model-builder" in steps
     assert "list_datasets" in steps
     assert "complete_upload" in steps
 
@@ -1213,6 +1215,31 @@ async def test_eda_mcp_descriptions_explain_the_train_test_roles(eda_mcp_server)
     assert "Holdout validation" in rb and "original row order" in rb
     assert "probability_<class>" in rb
     assert "not from this report" in desc["get_model_report"]
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_upload_descriptions_match_backend_behaviour(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    # Collapse the docstring line breaks so phrases can be matched across them.
+    desc = {t.name: " ".join((t.description or "").split()) for t in tools}
+
+    # A retried complete_upload on a CONSUMED session returns the existing version.
+    cu = desc["complete_upload"]
+    assert "CONSUMED" in cu and "returns the existing dataset version" in cu
+    assert "``CONSUMED`` is already a dataset version" not in cu
+    assert "409" in cu and "still in progress" in cu
+    # get_upload_status only sees start_upload sessions, not web model-builder uploads.
+    gs = desc["get_upload_status"]
+    assert "web model builder are not visible here" in gs
+    # create_dataset_version only accepts files under the caller's own prefix.
+    cdv = desc["create_dataset_version"]
+    assert "users/{userId}/" in cdv and "403" in cdv
+    # The model-builder URL comes from the API's fallback string; the public one is an example.
+    assert "``fallback`` string" in desc["start_upload"]
+    blob = " ".join(desc.values())
+    for url_at in [i for i in range(len(blob)) if blob.startswith("easydeploy.ai/model-builder", i)]:
+        assert "for example" in blob[max(0, url_at - 40):url_at], blob[max(0, url_at - 60):url_at + 30]
 
 
 @pytest.mark.asyncio

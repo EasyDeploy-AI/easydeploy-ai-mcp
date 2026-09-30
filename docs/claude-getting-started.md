@@ -87,13 +87,13 @@ Claude opens an upload session with `start_upload` and then uses the best byte c
 **3. Fetch from a share link — no sandbox egress, file already shareable.**
 Claude calls `upload_from_url` with a **Google Sheets or Drive link set to "anyone with the link"**, an OpenAI file link, or another allowlisted host. EasyDeploy fetches the bytes server-side, up to **256 MB**.
 
-Claude then waits for `get_upload_status` to report `READY` — every file passes the CSV validator before it becomes a dataset version — and registers it with `complete_upload`. If the status comes back `REJECTED`, the response says which check failed so Claude can fix the file and start over.
+Claude then waits for `get_upload_status` to report `READY` — every file passes the CSV validator before it becomes a dataset version — and registers it with `complete_upload`. Retrying `complete_upload` is safe: if the upload is already registered it returns the existing dataset version, and a 409 only means another call for the same upload is still finishing. If the status comes back `REJECTED`, the response says which check failed so Claude can fix the file and start over.
 
 **New dataset or new version?** If Claude starts the upload without a dataset id, `complete_upload` creates a new dataset. If it passes an existing dataset's id, the file becomes a new version of that dataset and keeps the dataset's current name. `qa_status` is informational and does not gate anything. `version_type` matters in one case: `submit_training_job` with an explicit `dataset_version_id` rejects a `raw` version. Omit `dataset_version_id` to train on the model version's own dataset.
 
 ### If no channel works: the model builder
 
-When the host has neither network egress nor a file bridge, Claude does **not** try to carry your data through the chat. Instead it saves the training file, gives it to you as a download, and sends you to:
+When the host has neither network egress nor a file bridge, Claude does **not** try to carry your data through the chat. Instead it saves the training file, gives it to you as a download, and sends you to the web model builder. The link comes from the `fallback` text in the `start_upload` result, so it always matches the environment you are connected to — for example:
 
 **[https://www.easydeploy.ai/model-builder](https://www.easydeploy.ai/model-builder)**
 
