@@ -312,6 +312,72 @@ async def test_eda_mcp_create_dataset_version_sets_type(eda_mcp_server):
     assert _kwargs["base_url"] == BASE
 
 
+_USER_KEY = "users/abc/projects/p/datasets/d/v1/f.csv"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "file_url",
+    [f"s3://my-bucket/{_USER_KEY}", _USER_KEY, f"  {_USER_KEY}  "],
+    ids=["s3-url", "bare-key", "bare-key-padded"],
+)
+async def test_eda_mcp_create_dataset_version_resolves_s3_key(eda_mcp_server, file_url):
+    mock_fn = AsyncMock(return_value={"datasetVersion": {"id": "dv-1", "version": 1}})
+    with patch("easydeploy_ai_mcp.server.api_client.create_dataset_version", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("create_dataset_version", {
+                "project_id": "p", "dataset_id": "d",
+                "version_type": "training", "file_url": file_url, "qa_metadata": {},
+            })
+
+    assert not result.is_error
+    mock_fn.assert_called_once()
+    assert mock_fn.call_args[0][2]["s3Key"] == _USER_KEY
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "file_url",
+    [
+        "https://my-bucket.s3.amazonaws.com/users/abc/f.csv",
+        "staging/upreq-1/raw",
+        "my-bucket/users/abc/f.csv",
+        "s3://my-bucket",
+        "s3://my-bucket/",
+    ],
+)
+async def test_eda_mcp_create_dataset_version_rejects_other_file_urls(eda_mcp_server, file_url):
+    mock_fn = AsyncMock()
+    with patch("easydeploy_ai_mcp.server.api_client.create_dataset_version", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("create_dataset_version", {
+                "project_id": "p", "dataset_id": "d",
+                "version_type": "training", "file_url": file_url, "qa_metadata": {},
+            }, raise_on_error=False)
+
+    assert result.is_error
+    text = result.content[0].text
+    assert "s3://" in text
+    assert "complete_upload returns as datasetVersion.s3Key" in text
+    assert "get_dataset_version returns as s3Key" in text
+    mock_fn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_create_dataset_version_requires_file_url(eda_mcp_server):
+    mock_fn = AsyncMock()
+    with patch("easydeploy_ai_mcp.server.api_client.create_dataset_version", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("create_dataset_version", {
+                "project_id": "p", "dataset_id": "d",
+                "version_type": "training", "file_url": "   ", "qa_metadata": {},
+            }, raise_on_error=False)
+
+    assert result.is_error
+    assert "file_url are required" in result.content[0].text
+    mock_fn.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_eda_mcp_get_prediction_sanitizes_response(eda_mcp_server):
     payload = {
@@ -1234,7 +1300,7 @@ async def test_eda_mcp_upload_descriptions_match_backend_behaviour(eda_mcp_serve
     assert "web model builder are not visible here" in gs
     # create_dataset_version only accepts files under the caller's own prefix.
     cdv = desc["create_dataset_version"]
-    assert "users/{userId}/" in cdv and "403" in cdv
+    assert "users/{userId}/" in cdv and "400" in cdv
     # The model-builder URL comes from the API's fallback string; the public one is an example.
     assert "``fallback`` string" in desc["start_upload"]
     blob = " ".join(desc.values())
