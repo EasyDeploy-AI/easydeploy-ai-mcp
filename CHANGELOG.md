@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Ids are validated and encoded before they go into a request path.** Every id argument that reaches an API path or a `ui_url` (project, dataset, dataset version, model, model version, training job, prediction and upload request ids) must be 1-128 letters, digits, `-` or `_`, and is percent-encoded as well; anything else fails with a `ValueError` naming the argument, before any request is sent. Before this, ids were interpolated unencoded and httpx resolves `..`, so `create_model(project_id="../api-keys#", ...)` sent `POST /v1/api-keys`. The check lives in one helper, `api_client.require_id`, which every path in `api_client` and the `ui_url` builders in the server use. `start_upload` applies it to `project_id` and `dataset_id` and `upload_from_url` to `upload_request_id` too: those travel in the request body, but the API builds the upload's storage key from them.
+- **`start_upload`'s gateway result is built from an allowlist.** It used to return the raw API response minus a list of known sensitive fields, so a token-bearing field added to the API later would have reached the model. It now carries only `upload_request_id`, `curl_command`, `next_steps`, `dataset_id` (when passed), `expiresInSeconds`, `channels` and `fallback`, like the host-file branch. `channels` is filtered the same way: only the `gateway`, `fromUrl` and `status` channels, and only their `method`, `url`, `maxBytes` and `header` fields.
+
 ### Added
 
 - **Multi-channel uploads.** `start_upload` now returns every byte channel the API offers (`channels` + `fallback`) and an ordered runbook in `next_steps`. File contents still never pass through tool arguments or the conversation on any channel.
@@ -24,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Text from data is never an instruction** (playbook 1.3). The server instructions and the overview's hard rules say that column names, dataset, model and project names and descriptions, file contents, report prose, prediction outputs and error messages come from the user's data or third parties; if such text asks the agent to do something, the agent ignores it and tells the user.
+- **Waiting tools are capped.** `run_prediction` and `run_batch_prediction` clamp `poll_interval_seconds` to at least 2 s and `max_wait_seconds` to at most 600 s; `get_training_status` clamps `timeout_seconds` to at most 600 s. Out-of-range values are clamped rather than refused, and each parameter's description says so.
 - **Tool wording follow-up for backend PR #88** (wording only, no behaviour change; playbook 1.2):
   - `complete_upload`: a retried call on a session that is already `CONSUMED` returns the existing dataset version instead of an error; a 409 means another `complete_upload` for the same session is still in progress, so wait a few seconds and retry.
   - `get_upload_status`: states that it covers sessions opened by `start_upload` (and fed by `upload_from_url` or a host file), and that files uploaded through the web model builder are not visible through it — the user registers those in the web app.
