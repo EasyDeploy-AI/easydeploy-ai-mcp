@@ -722,6 +722,54 @@ async def test_eda_mcp_start_upload_next_steps_is_the_runbook(eda_mcp_server):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("base_url", "host", "other_host"),
+    [
+        ("https://api.beta.easydeploy.ai/v1", "api.beta.easydeploy.ai", "api.easydeploy.ai"),
+        ("https://api.easydeploy.ai/v1", "api.easydeploy.ai", "api.beta.easydeploy.ai"),
+        (BASE, "api.example.com", "api.easydeploy.ai"),
+    ],
+)
+async def test_eda_mcp_start_upload_runbook_names_configured_api_host(
+    eda_mcp_server, base_url, host, other_host
+):
+    presign = {
+        "gatewayUploadUrl": "https://gw.example.com/v1/uploads/data?uploadToken=tok",
+        "uploadRequestId": "upreq-1",
+        "fallback": "Hand the file to the user and send them to the model builder.",
+    }
+    mock_fn = AsyncMock(return_value=presign)
+    # The host is read from the resolved API base at call time, not hard-coded.
+    with patch.object(_eda_mod, "_BASE_URL", base_url), patch(
+        "easydeploy_ai_mcp.server.api_client.get_upload_url", mock_fn
+    ):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("start_upload", {
+                "filename": "train.csv",
+                "project_id": "p1",
+            })
+
+    assert not result.is_error
+    data = result.data
+    steps = data["next_steps"]
+    assert f"allow the host `{host}`" in steps
+    assert other_host not in steps
+    assert "Settings → Capabilities → Allow network egress" in steps
+    assert "*." not in steps
+    # Retry first; the share-link and model-builder fallback still follow.
+    retry = steps.index("then retry the curl")
+    assert steps.index("If egress cannot be enabled") > retry
+    assert steps.index("upload_from_url") > retry
+    assert steps.index("fallback string in this start_upload result") > retry
+    # The PR #8 result shape is unchanged.
+    assert data["curl_command"] == (
+        'curl -X PUT -H "Content-Type: text/csv" -H "X-Upload-Token: tok" '
+        '-T "FILE_PATH" "https://gw.example.com/v1/uploads/data"'
+    )
+    assert set(data) == {"upload_request_id", "curl_command", "next_steps", "fallback"}
+
+
+@pytest.mark.asyncio
 async def test_eda_mcp_start_upload_with_file_uses_from_url(eda_mcp_server):
     presign = {
         "gatewayUploadUrl": "https://api.example.com/prod/v1/uploads/data?uploadToken=tok",
