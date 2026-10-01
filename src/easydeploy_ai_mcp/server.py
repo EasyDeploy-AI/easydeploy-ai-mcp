@@ -514,7 +514,7 @@ def _gateway_runbook(project_id: str, upload_request_id: str, dataset_id: str) -
         "contents into any tool. If the upload is blocked by network egress, ask the user "
         f"to allow the host `{_api_host()}` (Claude Desktop: Settings → Capabilities → "
         "Allow network egress → domain allowlist; paid Claude plans), then retry the curl. "
-        "Ask for that exact host and no wildcard.\n"
+        "Ask for that exact host.\n"
         "3. If egress cannot be enabled: if the file is already at a shareable URL (a "
         "Google Sheets or Drive link set to anyone-with-link, or a file link this host "
         f"provides), call upload_from_url with upload_request_id='{upload_request_id}' and "
