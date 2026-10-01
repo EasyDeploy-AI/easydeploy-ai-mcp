@@ -11,7 +11,8 @@ Remote HTTP: run ``easydeploy-ai-mcp-http`` or uvicorn ``easydeploy_ai_mcp.http_
 
 Security:
   - All API calls enforce HTTPS (TLS) — non-HTTPS URLs are rejected.
-  - Response sanitization strips internal storage paths and auth fields.
+  - Responses drop auth fields and upload tokens; a dataset version's storage key
+    (s3Key) is returned because create_dataset_version takes it back.
   - Every id that goes into an API path or a ui_url must be 1-128 letters, digits,
     '-' or '_' (api_client.require_id); anything else is refused before any request.
   - MCP stdio transport is a local process pipe — never traverses a network.

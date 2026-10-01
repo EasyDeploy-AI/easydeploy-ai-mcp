@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are applied to the **latest minor release** on the default branch (currently **0.1.x**). Older versions may not receive backports unless explicitly documented in a security advisory. Use the newest published release when deploying.
+Security fixes are applied to the **latest minor release** on the default branch (currently **0.3.x**). Older versions may not receive backports unless explicitly documented in a security advisory. Use the newest published release when deploying.
 
 ## Reporting vulnerabilities
 
