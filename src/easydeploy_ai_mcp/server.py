@@ -62,7 +62,7 @@ import sys
 
 import httpx
 from typing import Annotated, Any, Literal
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlsplit, urlunparse
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -493,6 +493,16 @@ def _complete_upload_args(project_id: str, upload_request_id: str, dataset_id: s
     return f"{args}, and a dataset name (a new dataset is created)"
 
 
+def _api_host() -> str:
+    """Hostname of the configured EasyDeploy API, read at call time.
+
+    This is the host a sandbox must be allowed to reach for the gateway PUT. It
+    comes from the resolved ``EDA_API_BASE`` (production, beta, or self-hosted),
+    so the runbook never names a host this server is not actually using.
+    """
+    return urlsplit(_BASE_URL).hostname or ""
+
+
 def _gateway_runbook(project_id: str, upload_request_id: str, dataset_id: str) -> str:
     """The ordered fallback runbook returned by start_upload on the curl path."""
     return (
@@ -501,21 +511,24 @@ def _gateway_runbook(project_id: str, upload_request_id: str, dataset_id: str) -
         "file and do not paste its contents into any tool.\n"
         "2. If curl fails with a network or connection error (could not resolve host, "
         "connection refused, timeout), this sandbox has no egress. Do NOT paste file "
-        "contents into any tool. Instead: if the file is already at a shareable URL (a "
+        "contents into any tool. If the upload is blocked by network egress, ask the user "
+        f"to allow the host `{_api_host()}` (Claude Desktop: Settings → Capabilities → "
+        "Allow network egress → domain allowlist; paid Claude plans), then retry the curl. "
+        "Ask for that exact host and no wildcard.\n"
+        "3. If egress cannot be enabled: if the file is already at a shareable URL (a "
         "Google Sheets or Drive link set to anyone-with-link, or a file link this host "
         f"provides), call upload_from_url with upload_request_id='{upload_request_id}' and "
         "that URL. Otherwise save the training file, give it to the user as a download, and "
         "send them to the web model builder using the fallback string in this start_upload "
         "result, which carries the model-builder URL for this environment (for example "
-        f"{_MODEL_BUILDER_EXAMPLE_URL}). Mention that enabling network "
-        "access for this host, where their plan allows it, avoids the detour next time.\n"
-        "3. After a model-builder upload, ask the user for the dataset name they entered or "
+        f"{_MODEL_BUILDER_EXAMPLE_URL}).\n"
+        "4. After a model-builder upload, ask the user for the dataset name they entered or "
         "the dataset URL shown on the page. Resolve it with list_datasets (match the name) "
         "or by parsing the project and dataset ids out of the URL, confirm the row count "
         "matches the file you handed over, and continue from that dataset id. Do not guess "
         "which dataset is theirs. A model-builder upload is already registered as a dataset "
         "— do not call complete_upload for it.\n"
-        f"4. Otherwise poll get_upload_status with upload_request_id='{upload_request_id}' "
+        f"5. Otherwise poll get_upload_status with upload_request_id='{upload_request_id}' "
         "until status is READY (REJECTED means the validator refused the file — read error "
         "and fix it), then call complete_upload with "
         f"{_complete_upload_args(project_id, upload_request_id, dataset_id)}."
@@ -550,7 +563,8 @@ async def start_upload(
 
     **B. Gateway PUT (default).** Called without ``file``, this returns
     ``curl_command``: replace FILE_PATH and run it in bash. Max ~6 MB; no API key
-    or auth header goes in the curl command.
+    or auth header goes in the curl command. If the sandbox blocks network
+    egress, ``next_steps`` names the exact API host the user should allow.
 
     **C. Fetch from a share link.** If the sandbox cannot reach the network but
     the file sits at a shareable URL, call ``upload_from_url`` with the returned

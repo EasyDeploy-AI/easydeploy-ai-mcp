@@ -40,7 +40,7 @@ We host the MCP endpoint. You add it once inside Claude; after you connect and s
 
 `api.easydeploy.ai`
 
-That is the only host uploads go to. Do not use a wildcard such as `*.execute-api.us-east-1.amazonaws.com`: it would also allow every other API Gateway in that region, which is an open channel out of the sandbox. If you point the server at a different EasyDeploy API with `EDA_API_BASE`, allow that host instead.
+That is the only host uploads to the public production server go to. Do not use a wildcard such as `*.execute-api.us-east-1.amazonaws.com`: it would also allow every other API Gateway in that region, which is an open channel out of the sandbox. A server pointed at another EasyDeploy API (the beta server, or one set with `EDA_API_BASE`) needs that API's host instead, and the `start_upload` runbook names the exact host to allow.
 
 > The domain allowlist UI is available on paid Claude plans.
 
