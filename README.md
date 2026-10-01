@@ -36,9 +36,11 @@ We host the MCP endpoint. You add it once inside Claude; after you connect and s
 
 **Connect and sign in (inside Claude):** After the custom connector is set up, Claude shows an EasyDeploy card with the MCP URL and a **Connect** button. Use that flow to sign in. You do not paste an API key into Claude. Access stays tied to the EasyDeploy profile you authenticate in the browser.
 
-**Claude Desktop and file uploads:** File uploads and some tool calls reach EasyDeploy over the network. On Desktop, Claude blocks outbound traffic unless you allow the domains it should call. Open **Settings → Capabilities**, turn on **Allow network egress**, and under the domain allowlist add this entry exactly (including the leading `*.`):
+**Claude Desktop and file uploads:** File uploads and some tool calls reach EasyDeploy over the network. On Desktop, Claude blocks outbound traffic unless you allow the domains it should call. Open **Settings → Capabilities**, turn on **Allow network egress**, and under the domain allowlist add this one host exactly:
 
-`*.execute-api.us-east-1.amazonaws.com`
+`api.easydeploy.ai`
+
+That is the only host uploads go to. Do not use a wildcard such as `*.execute-api.us-east-1.amazonaws.com`: it would also allow every other API Gateway in that region, which is an open channel out of the sandbox. If you point the server at a different EasyDeploy API with `EDA_API_BASE`, allow that host instead.
 
 > The domain allowlist UI is available on paid Claude plans.
 
