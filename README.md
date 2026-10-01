@@ -177,7 +177,7 @@ pip install .
 | `EDA_COGNITO_USER_POOL_ID`         | OAuth    | Cognito user pool that issues access tokens for the EasyDeploy API.                             |
 | `EDA_COGNITO_CLIENT_ID`            | OAuth    | App client ID expected in the access token's `client_id` claim.                                 |
 | `EDA_COGNITO_REGION`               | No       | AWS region for the user pool (default `us-east-1`).                                             |
-| `EDA_REPORT_MAX_WAIT_SECONDS`      | No       | `get_model_report` poll budget (default `300`).                                                 |
+| `EDA_REPORT_MAX_WAIT_SECONDS`      | No       | `get_model_report` poll budget (default and maximum `150`).                                     |
 | `EDA_REPORT_POLL_INTERVAL_SECONDS` | No       | Poll interval in seconds (default `10`).                                                        |
 | `HOST` / `PORT`                    | No       | HTTP bind (defaults `0.0.0.0` / `8080`).                                                        |
 | `EDA_TRUST_FORWARDED_HEADERS`      | No       | Set to `1` behind ALB/reverse proxy so RFC 9728 `resource` uses `https` (trusts `X-Forwarded-Proto`). |

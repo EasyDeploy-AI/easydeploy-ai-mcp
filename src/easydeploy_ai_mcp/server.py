@@ -1129,6 +1129,11 @@ async def get_model_report(
 
     Default response is **summary** only (token-efficient). Set full_report=true for full detail.
 
+    The report is generated after training finishes, so this tool waits for it for up to
+    150 s (``EDA_REPORT_MAX_WAIT_SECONDS``, never more than 150). If it is still being
+    generated then, the result has ``timed_out: true`` and ``next_steps``: nothing failed,
+    call get_model_report again to keep waiting.
+
     **How the model was validated.** Model search scores candidates by
     cross-validation: 10-fold stratified shuffled CV on ROC-AUC for classifiers,
     10-fold shuffled CV on negative MSE for regressors; a version created with
@@ -1154,7 +1159,10 @@ async def get_model_report(
     """
     # Training completion != report readiness.
     # Poll ModelVersion.edaReportStatus (set by generate_eda_report Lambda) before reading S3.
-    max_wait_seconds = int(os.environ.get("EDA_REPORT_MAX_WAIT_SECONDS", "300"))
+    max_wait_seconds = min(
+        _MAX_BLOCKING_SECONDS,
+        max(0, int(os.environ.get("EDA_REPORT_MAX_WAIT_SECONDS", str(_MAX_BLOCKING_SECONDS)))),
+    )
     poll_interval_seconds = float(os.environ.get("EDA_REPORT_POLL_INTERVAL_SECONDS", "10"))
 
     pid = project_id.strip()
@@ -1203,11 +1211,20 @@ async def get_model_report(
 
         elapsed = asyncio.get_event_loop().time() - started_at
         if elapsed >= max_wait_seconds:
-            raise TimeoutError(
-                f"Timed out waiting for EDA report readiness (edaReportStatus != READY) for modelVersionId={target_version_id}"
-            )
+            return {
+                "modelVersionId": target_version_id,
+                "edaReportStatus": report_status_str or None,
+                "timed_out": True,
+                "ui_url": _model_ui_url(pid, model_id),
+                "next_steps": (
+                    "The training report is still being generated; nothing failed. Call "
+                    f"get_model_report again with model_id='{model_id}' and "
+                    f"model_version_id='{target_version_id}' to keep waiting."
+                ),
+            }
 
-        await asyncio.sleep(poll_interval_seconds)
+        # Never sleep past the budget, whatever the poll interval.
+        await asyncio.sleep(min(poll_interval_seconds, max_wait_seconds - elapsed))
 
     data = await api_client.get_model_report(
         model_id,
@@ -1225,7 +1242,11 @@ async def get_model_report(
 
 # Waiting tools hold an MCP call open, so the model cannot ask for an unbounded
 # wait or a tight polling loop. Out-of-range values are clamped, not refused.
-_MAX_WAIT_SECONDS = 600
+# _MAX_BLOCKING_SECONDS is the longest a single tool call may block. MCP hosts
+# cut long tool calls (Claude ends one at about 180 s), so a blocking tool must
+# return before that with its "still running, call again" result; a call the
+# host kills returns only an error.
+_MAX_BLOCKING_SECONDS = 150
 _MIN_POLL_INTERVAL_SECONDS = 2.0
 
 
@@ -1233,9 +1254,18 @@ def _clamp_prediction_wait(
     max_wait_seconds: float, poll_interval_seconds: float,
 ) -> tuple[float, float]:
     """Return (max_wait, interval) for the prediction tools' wait loops."""
-    max_wait = min(float(_MAX_WAIT_SECONDS), max(0.0, float(max_wait_seconds)))
+    max_wait = min(float(_MAX_BLOCKING_SECONDS), max(0.0, float(max_wait_seconds)))
     interval = max(_MIN_POLL_INTERVAL_SECONDS, float(poll_interval_seconds))
     return max_wait, interval
+
+
+def _prediction_wait_next_steps(prediction_id: str, tool: str) -> str:
+    """Guidance for a prediction wait that ran out before the job finished."""
+    return (
+        "The prediction is still running; nothing failed. Call get_prediction with "
+        f"prediction_id='{prediction_id}' to check it and keep waiting. Do not call "
+        f"{tool} again — that would start another prediction and spend credits again."
+    )
 
 
 @mcp.tool(annotations=_write(idempotent=False))
@@ -1275,9 +1305,10 @@ async def get_training_status(
     job_id: str,
     wait: bool = False,
     timeout_seconds: Annotated[int, Field(description=(
-        "With wait=true, how long to block, in seconds (default 180). Values above "
-        "600 are clamped to 600; call again to keep waiting."
-    ))] = 180,
+        "With wait=true, how long to block, in seconds (default 150). Values above "
+        "150 are clamped to 150 so the call returns before MCP hosts end it (about "
+        "3 minutes); call get_training_status again to keep waiting."
+    ))] = _MAX_BLOCKING_SECONDS,
     poll_interval_seconds: float = 10.0,
 ) -> dict[str, Any]:
     """
@@ -1292,10 +1323,11 @@ async def get_training_status(
 
     Set **wait=true** to block until the job reaches a terminal state (COMPLETE or
     FAILED). Polls every ``poll_interval_seconds`` (default 10 s) for up to
-    ``timeout_seconds`` (default 180 s / 3 min, at most 600 s). Training can take from minutes to
-    several hours depending on the plan and the data. If the timeout expires, the last polled status is returned with
+    ``timeout_seconds`` (default and maximum 150 s, so the call returns before MCP hosts
+    end it). Training can take from minutes to several hours depending on the plan and
+    the data. If the timeout expires, the last polled status is returned with
     ``timed_out: true`` and ``next_steps``: the job is still running, so call this
-    tool again with the same job_id — do not resubmit the training job.
+    tool again with the same job_id to keep waiting — do not resubmit the training job.
     """
     _NON_RETRYABLE = {401, 403, 404}
 
@@ -1308,7 +1340,7 @@ async def get_training_status(
     if status in terminal:
         return data
 
-    timeout = min(_MAX_WAIT_SECONDS, max(1, int(timeout_seconds)))
+    timeout = min(_MAX_BLOCKING_SECONDS, max(1, int(timeout_seconds)))
     interval = max(1.0, float(poll_interval_seconds))
     started = asyncio.get_event_loop().time()
     while True:
@@ -1322,7 +1354,7 @@ async def get_training_status(
                 "another training credit."
             )
             return data
-        await asyncio.sleep(interval)
+        await asyncio.sleep(min(interval, timeout - elapsed))
         try:
             data = await api_client.get_training_status(job_id, **_kw())
         except httpx.HTTPStatusError as exc:
@@ -1345,9 +1377,10 @@ async def run_prediction(
     target_feature: str = "",
     wait_for_result: bool = True,
     max_wait_seconds: Annotated[int, Field(description=(
-        "With wait_for_result=true, how long to wait, in seconds (default 90). Values "
-        "above 600 are clamped to 600; poll get_prediction after that."
-    ))] = 90,
+        "With wait_for_result=true, how long to wait, in seconds (default 150). Values "
+        "above 150 are clamped to 150 so the call returns before MCP hosts end it "
+        "(about 3 minutes); poll get_prediction to keep waiting."
+    ))] = _MAX_BLOCKING_SECONDS,
     poll_interval_seconds: Annotated[float, Field(description=(
         "Seconds between status checks while waiting (default 2.0). Values below "
         "2 are raised to 2."
@@ -1361,7 +1394,9 @@ async def run_prediction(
     inline. It returns no probability, so the model's default rule decides the label;
     when a decision depends on a threshold you chose, score the records with
     ``run_batch_prediction``, whose output has probability columns. Set
-    ``wait_for_result=false`` to return immediately with prediction_id.
+    ``wait_for_result=false`` to return immediately with prediction_id. A wait lasts
+    at most 150 s; if the prediction is still running then, the result has
+    ``timed_out: true`` and ``next_steps``: poll ``get_prediction`` to keep waiting.
     """
     body: dict[str, Any] = {"modelVersionId": model_version_id, "input": input_data}
     if project_id.strip():
@@ -1400,11 +1435,12 @@ async def run_prediction(
                 "prediction_id": prediction_id,
                 "status": status or "PENDING",
                 "timed_out": True,
+                "next_steps": _prediction_wait_next_steps(prediction_id, "run_prediction"),
             }
             if resolved_project:
                 result["ui_url"] = _predictions_ui_url(resolved_project)
             return result
-        await asyncio.sleep(interval)
+        await asyncio.sleep(min(interval, max_wait - elapsed))
 
 
 @mcp.tool(annotations=_write(idempotent=False))
@@ -1415,9 +1451,10 @@ async def run_batch_prediction(
     target_feature: str = "",
     wait_for_result: bool = False,
     max_wait_seconds: Annotated[int, Field(description=(
-        "With wait_for_result=true, how long to wait, in seconds (default 600). Values "
-        "above 600 are clamped to 600; poll get_prediction after that."
-    ))] = 600,
+        "With wait_for_result=true, how long to wait, in seconds (default 150). Values "
+        "above 150 are clamped to 150 so the call returns before MCP hosts end it "
+        "(about 3 minutes); poll get_prediction to keep waiting."
+    ))] = _MAX_BLOCKING_SECONDS,
     poll_interval_seconds: Annotated[float, Field(description=(
         "Seconds between status checks while waiting (default 5.0). Values below "
         "2 are raised to 2."
@@ -1447,7 +1484,9 @@ async def run_batch_prediction(
 
     Returns immediately by default (fire-and-poll). Use
     ``get_prediction(prediction_id)`` to check status (includes ``downloadReady``
-    flag for completed batches). Set ``wait_for_result=true`` to block.
+    flag for completed batches). Set ``wait_for_result=true`` to block for up to
+    150 s; if the batch is still running then, the result has ``timed_out: true``
+    and ``next_steps``: poll ``get_prediction`` to keep waiting.
     """
     body: dict[str, Any] = {
         "modelVersionId": model_version_id,
@@ -1490,11 +1529,12 @@ async def run_batch_prediction(
                 "prediction_id": prediction_id,
                 "status": status or "PENDING",
                 "timed_out": True,
+                "next_steps": _prediction_wait_next_steps(prediction_id, "run_batch_prediction"),
             }
             if resolved_project:
                 result["ui_url"] = _predictions_ui_url(resolved_project)
             return result
-        await asyncio.sleep(interval)
+        await asyncio.sleep(min(interval, max_wait - elapsed))
 
 
 @mcp.tool(annotations=_READ_ONLY)
