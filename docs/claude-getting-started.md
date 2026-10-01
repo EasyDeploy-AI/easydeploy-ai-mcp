@@ -50,9 +50,11 @@ File uploads and some tool calls reach EasyDeploy over the network. On **Claude 
 
 1. Open **Settings → Capabilities**.
 2. Turn on **Allow network egress**.
-3. Under the domain allowlist, add this entry exactly (including the leading `*.`):
+3. Under the domain allowlist, add this one host exactly:
 
-   `*.execute-api.us-east-1.amazonaws.com`
+   `api.easydeploy.ai`
+
+   That is the only host uploads go to. Do not use a wildcard such as `*.execute-api.us-east-1.amazonaws.com`: it would also allow every other API Gateway in that region, which is an open channel out of the sandbox. If you point the server at a different EasyDeploy API with `EDA_API_BASE`, allow that host instead.
 
 The domain allowlist UI is available on **paid** Claude plans.
 
