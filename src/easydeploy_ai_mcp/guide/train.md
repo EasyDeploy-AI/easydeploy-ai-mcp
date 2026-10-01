@@ -33,7 +33,7 @@ Set `time_series_mode` to true, with `time_column`, when rows are ordered in tim
 
 ## Waiting
 
-Call `get_training_status` with the `jobId` and wait=true. It blocks for up to `timeout_seconds` (default 180). If it returns `timed_out`, the job is still running: call it again with the same `job_id`. Never resubmit a running job; that starts a second job and spends another credit. Run time depends on the plan and the data and can be much longer than a few minutes. `list_model_versions` and `get_model_version` show the version's `status` (TRAINING_COMPLETED when done).
+Call `get_training_status` with the `jobId` and wait=true. It blocks for up to `timeout_seconds` (default and maximum 150, so the call ends before the host cuts it off). If it returns `timed_out`, the job is still running: call it again with the same `job_id` to keep waiting. Never resubmit a running job; that starts a second job and spends another credit. Run time depends on the plan and the data and can be much longer than a few minutes. `list_model_versions` and `get_model_version` show the version's `status` (TRAINING_COMPLETED when done).
 
 On FAILED, read the error. Check the target name and the file, fix the cause, and train again.
 

@@ -1218,10 +1218,10 @@ async def test_eda_mcp_start_upload_omits_dataset_id_unless_passed(eda_mcp_serve
 
 
 @pytest.mark.asyncio
-async def test_eda_mcp_get_training_status_timeout_says_poll_again(eda_mcp_server):
+async def test_eda_mcp_get_training_status_timeout_says_poll_again(eda_mcp_server, fake_clock):
     running = {"jobId": "job-1", "status": "RUNNING", "modelVersionId": "mv-1"}
     mock_fn = AsyncMock(return_value=dict(running))
-    # timeout_seconds and poll_interval_seconds both floor at 1: one real 1 s sleep.
+    # timeout_seconds and poll_interval_seconds both floor at 1: one 1 s (fake) sleep.
     with patch("easydeploy_ai_mcp.server.api_client.get_training_status", mock_fn):
         async with Client(eda_mcp_server) as client:
             tools = await client.list_tools()
@@ -1231,7 +1231,7 @@ async def test_eda_mcp_get_training_status_timeout_says_poll_again(eda_mcp_serve
             })
 
     schema = next(t for t in tools if t.name == "get_training_status").inputSchema
-    assert schema["properties"]["timeout_seconds"]["default"] == 180
+    assert schema["properties"]["timeout_seconds"]["default"] == 150
     assert not result.is_error
     assert result.data["timed_out"] is True
     assert result.data["status"] == "RUNNING"
@@ -1733,7 +1733,9 @@ async def test_eda_mcp_start_upload_gateway_result_is_an_allowlist(eda_mcp_serve
 
 def test_clamp_prediction_wait():
     assert _eda_mod._clamp_prediction_wait(90, 2.0) == (90.0, 2.0)
-    assert _eda_mod._clamp_prediction_wait(100_000, 0.01) == (600.0, 2.0)
+    assert _eda_mod._MAX_BLOCKING_SECONDS == 150
+    assert _eda_mod._clamp_prediction_wait(100_000, 0.01) == (150.0, 2.0)
+    assert _eda_mod._clamp_prediction_wait(151, 2.0) == (150.0, 2.0)
     assert _eda_mod._clamp_prediction_wait(-5, 0) == (0.0, 2.0)
 
 
@@ -1758,12 +1760,41 @@ async def test_eda_mcp_prediction_waits_are_clamped(eda_mcp_server, fake_clock, 
                 **extra,
             })
 
+    assert not result.is_error
     assert result.data["timed_out"] is True
     assert set(fake_clock.sleeps) == {2.0}
-    assert fake_clock.now == 600.0
+    assert fake_clock.now == 150.0
+    assert "get_prediction" in result.data["next_steps"]
+    assert "prediction_id='pred_1'" in result.data["next_steps"]
+    assert f"Do not call {tool} again" in result.data["next_steps"]
     props = next(t for t in tools if t.name == tool).inputSchema["properties"]
-    assert "clamped to 600" in props["max_wait_seconds"]["description"]
+    assert props["max_wait_seconds"]["default"] == 150
+    assert "clamped to 150" in props["max_wait_seconds"]["description"]
+    assert "poll get_prediction to keep waiting" in props["max_wait_seconds"]["description"]
     assert "raised to 2" in props["poll_interval_seconds"]["description"]
+    assert "600" not in props["max_wait_seconds"]["description"]
+
+
+@pytest.mark.parametrize("tool,extra", [
+    ("run_prediction", {"input_data": {"arr": 1000}}),
+    ("run_batch_prediction", {"dataset_version_id": "dsv_1"}),
+])
+@pytest.mark.asyncio
+async def test_eda_mcp_prediction_waits_default_to_150(eda_mcp_server, fake_clock, tool, extra):
+    submit_mock = AsyncMock(return_value={"id": "pred_1", "status": "PENDING"})
+    get_mock = AsyncMock(return_value={"id": "pred_1", "status": "PENDING"})
+    with patch("easydeploy_ai_mcp.server.api_client.run_prediction", submit_mock), \
+         patch("easydeploy_ai_mcp.server.api_client.get_prediction", get_mock):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool(tool, {
+                "model_version_id": "mv_1", "project_id": "proj_1",
+                "wait_for_result": True, **extra,
+            })
+
+    assert not result.is_error
+    assert result.data["timed_out"] is True
+    assert fake_clock.now == 150.0
+    assert submit_mock.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -1777,8 +1808,87 @@ async def test_eda_mcp_get_training_status_timeout_is_capped(eda_mcp_server, fak
                 "poll_interval_seconds": 10,
             })
 
+    assert not result.is_error
     assert result.data["timed_out"] is True
-    assert fake_clock.now == 600.0
-    assert mock_fn.call_count == 61
+    assert fake_clock.now == 150.0
+    assert mock_fn.call_count == 16
     props = next(t for t in tools if t.name == "get_training_status").inputSchema["properties"]
-    assert "clamped to 600" in props["timeout_seconds"]["description"]
+    assert "clamped to 150" in props["timeout_seconds"]["description"]
+    assert "call get_training_status again to keep waiting" in props["timeout_seconds"]["description"]
+    assert "600" not in props["timeout_seconds"]["description"]
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_get_training_status_wait_defaults_to_150(eda_mcp_server, fake_clock):
+    mock_fn = AsyncMock(return_value={"jobId": "job-1", "status": "RUNNING"})
+    with patch("easydeploy_ai_mcp.server.api_client.get_training_status", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("get_training_status", {"job_id": "job-1", "wait": True})
+
+    assert not result.is_error
+    assert result.data["timed_out"] is True
+    assert "still running" in result.data["next_steps"]
+    assert fake_clock.now == 150.0
+
+
+@pytest.mark.asyncio
+async def test_eda_mcp_waits_never_sleep_past_the_cap(eda_mcp_server, fake_clock):
+    # A poll interval that does not divide the budget must not overshoot 150 s.
+    training = AsyncMock(return_value={"jobId": "job-1", "status": "RUNNING"})
+    with patch("easydeploy_ai_mcp.server.api_client.get_training_status", training):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("get_training_status", {
+                "job_id": "job-1", "wait": True, "poll_interval_seconds": 100,
+            })
+    assert result.data["timed_out"] is True
+    assert fake_clock.sleeps == [100.0, 50.0]
+    assert fake_clock.now == 150.0
+
+    fake_clock.now, fake_clock.sleeps = 0.0, []
+    with patch("easydeploy_ai_mcp.server.api_client.run_prediction",
+               AsyncMock(return_value={"id": "pred_1", "status": "PENDING"})), \
+         patch("easydeploy_ai_mcp.server.api_client.get_prediction",
+               AsyncMock(return_value={"id": "pred_1", "status": "PENDING"})):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("run_batch_prediction", {
+                "model_version_id": "mv_1", "project_id": "proj_1",
+                "dataset_version_id": "dsv_1", "wait_for_result": True,
+                "poll_interval_seconds": 120,
+            })
+    assert result.data["timed_out"] is True
+    assert fake_clock.sleeps == [120.0, 30.0]
+    assert fake_clock.now == 150.0
+
+
+@pytest.mark.parametrize("env_value,expected", [
+    (None, 150.0),          # unset: default 150
+    ("100000", 150.0),      # above the cap: clamped
+    ("30", 30.0),           # below the cap: kept
+])
+@pytest.mark.asyncio
+async def test_eda_mcp_get_model_report_wait_is_capped(
+    eda_mcp_server, fake_clock, monkeypatch, env_value, expected,
+):
+    if env_value is None:
+        monkeypatch.delenv("EDA_REPORT_MAX_WAIT_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("EDA_REPORT_MAX_WAIT_SECONDS", env_value)
+    monkeypatch.delenv("EDA_REPORT_POLL_INTERVAL_SECONDS", raising=False)
+    versions = [{"id": "mv-1", "edaReportStatus": "PENDING"}]
+    report_mock = AsyncMock()
+    with patch("easydeploy_ai_mcp.server.api_client.list_model_versions", AsyncMock(return_value=versions)), \
+         patch("easydeploy_ai_mcp.server.api_client.get_model_report", report_mock):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("get_model_report", {"model_id": "m1", "project_id": "p1"})
+
+    # The timeout is a result with guidance, not an error.
+    assert not result.is_error
+    assert result.data["timed_out"] is True
+    assert result.data["modelVersionId"] == "mv-1"
+    assert result.data["edaReportStatus"] == "PENDING"
+    steps = result.data["next_steps"]
+    assert "still being generated" in steps
+    assert "get_model_report again" in steps
+    assert "model_version_id='mv-1'" in steps
+    assert fake_clock.now == expected
+    report_mock.assert_not_called()
