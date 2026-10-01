@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-01
+
 ### Security
 
 - **Ids are validated and encoded before they go into a request path.** Every id argument that reaches an API path or a `ui_url` (project, dataset, dataset version, model, model version, training job, prediction and upload request ids) must be 1-128 letters, digits, `-` or `_`, and is percent-encoded as well; anything else fails with a `ValueError` naming the argument, before any request is sent. Before this, ids were interpolated unencoded and httpx resolves `..`, so `create_model(project_id="../api-keys#", ...)` sent `POST /v1/api-keys`. The check lives in one helper, `api_client.require_id`, which every path in `api_client` and the `ui_url` builders in the server use. `start_upload` applies it to `project_id` and `dataset_id` and `upload_from_url` to `upload_request_id` too: those travel in the request body, but the API builds the upload's storage key from them.
@@ -111,6 +113,7 @@ all. stdio users are unaffected beyond the `caller_channel` fix.
 - Optional `MCP_SERVICE_TOKEN` for gating the HTTP MCP surface; HTTPS-only calls to the EasyDeploy API.
 - `Dockerfile` for self-hosted deployments.
 
-[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/releases/tag/v0.1.0
