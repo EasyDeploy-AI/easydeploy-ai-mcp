@@ -52,6 +52,7 @@ see the right token.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hmac
 import json
 import logging
@@ -67,10 +68,82 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 
+from easydeploy_ai_mcp import api_client
 from easydeploy_ai_mcp import auth
 from easydeploy_ai_mcp import oauth_as_metadata
 from easydeploy_ai_mcp import oauth_broker
 from easydeploy_ai_mcp.server import mcp
+
+
+# ── Log redaction ──────────────────────────────────────────────────────────────
+#
+# uvicorn's access log writes each request target with its query string, and on
+# this server queries carry OAuth secrets: /authorize (state, PKCE challenge,
+# redirect_uri), /oauth/callback (the authorization code) and the GET /token
+# quirk (codes, PKCE verifiers, refresh tokens). Every query value is replaced,
+# on every path. The parameter names stay, so an OAuth flow can still be
+# debugged from the log; covering every path means a route added later, or a
+# client that sends a secret where it shouldn't, needs no list kept current.
+
+
+def _redact_query(target: str) -> str:
+    """``/p?code=abc&state=xyz`` → ``/p?code=[redacted]&state=[redacted]``."""
+    path, sep, query = target.partition("?")
+    if not sep:
+        return target
+    parts = []
+    for part in query.split("&"):
+        name, eq, _value = part.partition("=")
+        parts.append(f"{name}=[redacted]" if eq else "[redacted]")
+    return f"{path}?{'&'.join(parts)}"
+
+
+class _AccessLogQueryFilter(logging.Filter):
+    """Replaces every query value in uvicorn access-log lines.
+
+    uvicorn logs ``'%s - "%s %s HTTP/%s" %d'`` with the target (path and query)
+    as an argument, so the arguments are rewritten before formatting.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _redact_query(arg) if isinstance(arg, str) and "?" in arg else arg
+                for arg in record.args
+            )
+        return True
+
+
+class _SecretsLogFilter(logging.Filter):
+    """Scrubs bearer tokens, API keys, JWTs and URL queries from a log message.
+
+    For FastMCP's tool-call log, which quotes the arguments of a call that fails
+    validation. Request headers never become tool arguments, so the bearer token
+    cannot reach it that way; this covers a client that puts one in an argument.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        clean = api_client._redact(message)
+        if clean != message:
+            record.msg, record.args = clean, ()
+        return True
+
+
+def _install_log_filter(logger_name: str, log_filter: logging.Filter) -> None:
+    """Attach ``log_filter`` to a logger, replacing one of its kind from an earlier import."""
+    logger = logging.getLogger(logger_name)
+    for old in [f for f in logger.filters if type(f).__name__ == type(log_filter).__name__]:
+        logger.removeFilter(old)
+    logger.addFilter(log_filter)
+
+
+# On the loggers, not their handlers: uvicorn's dictConfig replaces handlers but
+# keeps logger filters, so this holds whether uvicorn configures logging before
+# importing this module (``easydeploy-ai-mcp-http``, ``uvicorn …http_main:app``)
+# or after.
+_install_log_filter("uvicorn.access", _AccessLogQueryFilter())
+_install_log_filter("fastmcp.server.server", _SecretsLogFilter())
 
 
 _OAUTH_ENABLED = auth.is_oauth_enabled()
@@ -228,12 +301,49 @@ async def oauth_authorization_server_metadata(request: Request) -> Response:
     )
 
 
+#: RFC 6749 §5.1: a response that carries tokens or client credentials is never
+#: cached. The /token proxy copies only Cognito's Content-Type, so these are set
+#: here, on its own error responses too.
+_NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+
+def _no_store(endpoint):  # type: ignore[no-untyped-def]
+    """Wrap a route endpoint so every response it returns, error or not, is no-store."""
+
+    @functools.wraps(endpoint)
+    async def wrapped(request: Request) -> Response:
+        response = await endpoint(request)
+        response.headers.update(_NO_STORE_HEADERS)
+        return response
+
+    return wrapped
+
+
+#: Grants the Cognito app client supports. Cognito issues a refresh token on the
+#: authorization-code grant and ``/token`` forwards refresh requests unchanged.
+_DCR_GRANT_TYPES = ("authorization_code", "refresh_token")
+
+
+def _registered_grant_types(requested: object) -> list[str]:
+    """The ``grant_types`` to answer a registration with (RFC 7591 §2).
+
+    Echoes the requested grants this client supports. A request that names none
+    of them, or no grants at all, gets both: the server may replace requested
+    metadata. A client told only ``authorization_code`` may never try a refresh,
+    so its user signs in again whenever the access token expires.
+    """
+    wanted = {g for g in requested if isinstance(g, str)} if isinstance(requested, list) else set()
+    granted = [g for g in _DCR_GRANT_TYPES if g in wanted]
+    return granted or list(_DCR_GRANT_TYPES)
+
+
 async def oauth_static_client_registration(request: Request) -> JSONResponse:
     """RFC 7591-style registration response using the existing Cognito public app client.
 
     Cognito does not implement dynamic client registration. MCP OAuth brokers still
     expect ``registration_endpoint`` and a ``client_id``; we always return the pool's
-    pre-configured MCP OAuth client (``EDA_COGNITO_CLIENT_ID``).
+    pre-configured MCP OAuth client (``EDA_COGNITO_CLIENT_ID``). ``grant_types``
+    echoes the requested ones that client supports (see ``_registered_grant_types``).
     """
     if _OAUTH_CONFIG is None:
         return JSONResponse({"detail": "OAuth not configured"}, status_code=404)
@@ -260,7 +370,7 @@ async def oauth_static_client_registration(request: Request) -> JSONResponse:
         "client_id_issued_at": issued_at,
         "client_name": client_name,
         "redirect_uris": redirect_uris,
-        "grant_types": ["authorization_code"],
+        "grant_types": _registered_grant_types(reg_body.get("grant_types")),
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
         "scope": "openid email profile",
@@ -627,7 +737,7 @@ if _OAUTH_ENABLED:
     _routes.append(
         Route(
             "/token",
-            endpoint=proxy_oauth_token,
+            endpoint=_no_store(proxy_oauth_token),
             methods=["GET", "POST"],
         )
     )
@@ -641,14 +751,14 @@ if _OAUTH_ENABLED:
     _routes.append(
         Route(
             "/oauth/register",
-            endpoint=oauth_static_client_registration,
+            endpoint=_no_store(oauth_static_client_registration),
             methods=["POST"],
         )
     )
     _routes.append(
         Route(
             "/register",
-            endpoint=oauth_static_client_registration,
+            endpoint=_no_store(oauth_static_client_registration),
             methods=["POST"],
         )
     )

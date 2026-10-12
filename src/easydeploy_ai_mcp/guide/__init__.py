@@ -50,8 +50,8 @@ def next_after(name: str) -> str:
     """What to read after ``name`` (a section, or ``all``)."""
     if name == "all":
         return (
-            "You have every section. When you reach a step, re-read its section with "
-            "get_started(section=...) rather than relying on memory."
+            "This result has every section. get_started(section=...) returns any one "
+            "of them on its own."
         )
     index = SECTION_NAMES.index(name)
     if index + 1 < len(SECTION_NAMES):
