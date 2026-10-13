@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
 ### Security
 
 - **The access log no longer records query values.** uvicorn's access log, on by default, wrote each request target with its query, so production logged `/authorize` requests with their `state`, PKCE challenge and `redirect_uri`, broker mode logged `/oauth/callback?code=…` with the authorization code, and a client using the `GET /token` quirk would have had codes, PKCE verifiers or refresh tokens logged. A filter on the `uvicorn.access` logger, installed when `http_main` is imported, now replaces every query value on every path and keeps the parameter names, so `GET /oauth/callback?code=[redacted]&state=[redacted]` is what gets logged. It sits on the logger rather than a handler, so it holds whether uvicorn configures logging before or after importing the app (`easydeploy-ai-mcp-http`, as the Docker image runs it, or `uvicorn easydeploy_ai_mcp.http_main:app`).
@@ -30,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **API errors say what failed and what to do.** Most `api_client` calls used a bare `raise_for_status()`, so a failed tool call reached the model as httpx's generic text, for example "Client error '400 Bad Request' for url '…/training-jobs' For more information check: https://developer.mozilla.org/…", and the API's own reason was lost. Every call now goes through one helper, `api_client._raise_for_status`, which raises `EasyDeployAPIError` (a subclass of `httpx.HTTPStatusError`, so existing handlers and `exc.response.status_code` keep working). Its message names the method, the path, the status and the API's `code | message | request id`, for example "EasyDeploy API returned 400 Bad Request for POST /v1/training-jobs: INVALID_VERSION_TYPE | Training jobs require a qa_cleaned or training version | request id …". When the body says nothing useful (empty, HTML, or an API Gateway "Unauthorized"), a short explanation of the status takes its place: 401 says to reconnect EasyDeploy or fix the API key, 403 says the account or plan does not allow it, 404 names the ids that were looked up, 413 gives the 6 MB gateway cap and the URL route, 429 says to wait and retry, and 5xx says to retry. A 401 from the API keeps its own words and adds the reconnect step. The query string, where upload and download tokens travel, is never shown, and bearer tokens, API keys, JWTs and URL queries quoted in a response body are redacted. The three calls that already surfaced the API's message (`complete_dataset_upload`, `upload_from_url`, `get_upload_status`) use the same helper and no longer print the full request URL.
 - Server-side errors name the next step too: a missing upload id or gateway URL says to call `start_upload` again, an empty host `file` says to attach it again or use `curl_command`, `get_model_report` says which model or version it could not find and which tool lists them, and a prediction with no id says to check `list_predictions` before retrying, since credits may already be spent.
-- **`serverInfo.version` is the package version.** `FastMCP(...)` is given `version=__version__`, so the initialize result reports 0.3.0 rather than FastMCP's own version. `__version__` is now set in `easydeploy_ai_mcp/__init__.py` before the server import.
+- **`serverInfo.version` is the package version.** `FastMCP(...)` is given `version=__version__`, so the initialize result reports the package version rather than FastMCP's own. `__version__` is now set in `easydeploy_ai_mcp/__init__.py` before the server import.
 - **Client registration offers refresh tokens.** `POST /register` and `/oauth/register` answered `grant_types: ["authorization_code"]` whatever the client asked for, although Cognito issues a refresh token on the authorization-code grant and `/token` forwards refresh requests. They now echo the requested grants out of `authorization_code` and `refresh_token`, and return both when none of them is requested. The authorization-server metadata at `/.well-known/oauth-authorization-server` now lists `grant_types_supported: ["authorization_code", "refresh_token"]`; RFC 8414 reads a missing value as `authorization_code` and `implicit`, which left out refresh.
 - `get_prediction`'s description said an ad-hoc result's `output` holds "the label/probability". It holds the predicted label or value only, as `run_prediction` already said.
 
@@ -140,7 +142,8 @@ all. stdio users are unaffected beyond the `caller_channel` fix.
 - Optional `MCP_SERVICE_TOKEN` for gating the HTTP MCP surface; HTTPS-only calls to the EasyDeploy API.
 - `Dockerfile` for self-hosted deployments.
 
-[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/releases/tag/v0.1.0
