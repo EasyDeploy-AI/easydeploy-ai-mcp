@@ -62,7 +62,7 @@ The domain allowlist UI is available on **paid** Claude plans.
 
 ## Start here: the `get_started` playbook
 
-The EasyDeploy connector has 28 tools. The first one Claude calls is `get_started`: it returns the EasyDeploy data-science playbook, step by step, from framing the problem to using the model's predictions. Claude calls it before any other EasyDeploy tool and again whenever you start a new modeling task, and it can ask for a single step (`prepare`, `split`, `upload`, `train`, `validate`, `predict`). The playbook is updated on EasyDeploy's side, so Claude always reads the current version; you do not need to reconnect the connector to pick up changes.
+The EasyDeploy connector has 28 tools. The one to start a modeling task with is `get_started`: it returns the EasyDeploy data-science playbook, step by step, from framing the problem to using the model's predictions, and Claude can ask it for a single step (`prepare`, `split`, `upload`, `train`, `validate`, `predict`). If Claude starts working without it, ask it to read the EasyDeploy playbook first. The playbook is updated on EasyDeploy's side, so Claude always reads the current version; you do not need to reconnect the connector to pick up changes.
 
 ## You are the data scientist
 
@@ -84,7 +84,7 @@ Claude opens an upload session with `start_upload` and then uses the best byte c
 `start_upload` declares `_meta: {"openai/fileParams": ["file"]}`, so the host hands EasyDeploy a download link for a file in the sandbox. No network access is needed from the sandbox. The session moves to `RECEIVING`, and Claude polls `get_upload_status` until `READY`, then calls `complete_upload`.
 
 **2. Gateway `curl` — the default on Claude Code, Cowork, and claude.ai or Desktop with egress.**
-`start_upload` returns a ready-made `curl_command`. Claude runs it in bash and polls `get_upload_status`. The gateway takes files up to **6 MB** and answers **413** above that; there is no chunking, so a larger file uses one of the other routes.
+`start_upload` returns a ready-made `curl_command`, the request that sends your file to EasyDeploy. Claude runs it in the shell where the file is and polls `get_upload_status`. The gateway takes files up to **6 MB** and answers **413** above that; there is no chunking, so a larger file uses one of the other routes.
 
 **3. Fetch from a share link — no sandbox egress, file already shareable.**
 Claude calls `upload_from_url` with a **Google Sheets or Drive link set to "anyone with the link"**, an OpenAI file link, or another allowlisted host. EasyDeploy fetches the bytes server-side, up to **256 MB**.

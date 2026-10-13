@@ -48,7 +48,7 @@ More detail and variants (for example a URL from your own deployment) are in [do
 
 ### Start here: `get_started`
 
-`get_started` returns the EasyDeploy data-science playbook, and the server's MCP `instructions` tell the agent to call it before any other EasyDeploy tool and again at the start of every new modeling task. Hosts cache tool descriptions and server instructions, and many never show the instructions to the model; a tool result is fetched live on every call. So the playbook lives in the tool's result, not in its description: the name and description stay fixed, and the content is updated with each release without anyone reconnecting.
+`get_started` returns the EasyDeploy data-science playbook, which is most useful at the start of a modeling task. Its description and the server's MCP `instructions` say what it returns rather than when the agent must call it, as the Claude connector directory requires. Hosts cache tool descriptions and server instructions, and many never show the instructions to the model; a tool result is fetched live on every call. So the playbook lives in the tool's result, not in its description: the name and description stay fixed, and the content is updated with each release without anyone reconnecting.
 
 - `get_started()` returns the overview: the roles, the whole workflow with the tools at each step, and the hard rules.
 - `get_started(section=...)` returns one section: `prepare`, `split`, `upload`, `train`, `validate` or `predict`. `all` returns every section.
@@ -73,7 +73,7 @@ EasyDeploy searches models, engineers features, tunes hyperparameters, trains, d
 | Channel | When it is used | Flow |
 | --- | --- | --- |
 | **File parameter** | Hosts that support `openai/fileParams` (Codex, ChatGPT). `start_upload` declares `_meta: {"openai/fileParams": ["file"]}`, so the host hydrates a `file` argument with a download URL. No sandbox network needed. | `start_upload(..., file=…)` → session goes to `RECEIVING` → poll `get_upload_status` → `complete_upload` |
-| **Gateway PUT** (default) | Claude Code, Cowork, and claude.ai / Desktop sandboxes with egress. Max **6 MB** per file; the gateway answers **413** above that, and there is no chunking path. | `start_upload` → run the returned `curl_command` in bash → poll `get_upload_status` → `complete_upload` |
+| **Gateway PUT** (default) | Claude Code, Cowork, and claude.ai / Desktop sandboxes with egress. Max **6 MB** per file; the gateway answers **413** above that, and there is no chunking path. | `start_upload` → run the returned `curl_command` in the shell where the file is → poll `get_upload_status` → `complete_upload` |
 | **Fetch from a share link** | The sandbox has no egress but the file is already at a shareable URL: a Google Sheets or Drive link set to **anyone with the link**, an OpenAI file link, or another allowlisted host. EasyDeploy fetches the bytes server-side, up to **256 MB**. | `start_upload` → `upload_from_url(upload_request_id, source_url)` → poll `get_upload_status` → `complete_upload` |
 
 `get_upload_status` reports `URL_ISSUED → RECEIVING → UPLOADED → VALIDATING → READY | REJECTED → CONSUMED` (plus `EXPIRED`). **`complete_upload` requires `READY`** — every byte that becomes a dataset version passes the CSV validator first, and a session still in flight, `REJECTED` or `EXPIRED` returns a 400 naming what to do. On `REJECTED`, the `error` field says which check failed. Retrying `complete_upload` is safe: on a session that is already `CONSUMED` it returns the existing dataset version, and a 409 means another call for the same session is still in progress (wait a few seconds and retry). `get_upload_status` only covers sessions opened by `start_upload`; files uploaded through the web model builder are registered in the web app and do not appear there.
@@ -135,9 +135,9 @@ For self-hosting on Docker or a cloud provider, see [Remote MCP (HTTP)](#remote-
 ## What you get
 
 - **28 tools**: `get_started` (the playbook) plus tools covering projects, datasets (including the three upload channels), model versions, training jobs, predictions, and account status.
-- **Tool annotations** on every tool (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so hosts can tell reads from writes. `get_started` and the 16 other `get_*` / `list_*` tools are read-only; no tool deletes anything; only `upload_from_url` and `start_upload` (given a host `file`) make EasyDeploy fetch an external URL. `create_project` and `create_model` are create-or-update (they PATCH when an id is passed), so they are marked as non-idempotent writes. Renaming a dataset is its own tool, `update_dataset`; `get_dataset` is a pure read.
+- **A title and tool annotations** on every tool (`title`, set both on the tool and as `annotations.title`, plus `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so hosts can tell reads from writes. `get_started` and the 16 other `get_*` / `list_*` tools are read-only. A write is `destructiveHint: true` when it can overwrite fields of an existing record: `create_project`, `create_model` and `create_dataset_version` (when given an id they update that record), `update_dataset`, and `submit_training_job` (a resubmitted job retrains its model version in place). The other writes only add records and are `destructiveHint: false`; no tool deletes anything. Only `upload_from_url` and `start_upload` (given a host `file`) make EasyDeploy fetch an external URL. `create_project` and `create_model` are create-or-update, so they are marked as non-idempotent writes. Renaming a dataset is its own tool, `update_dataset`; `get_dataset` is a pure read.
 - **stdio** transport for local clients, or **HTTP** with Streamable MCP on `/mcp` and **GET /healthz** for load balancers.
-- **Hardening:** HTTPS-only calls to the EasyDeploy API; optional `MCP_SERVICE_TOKEN` for the HTTP MCP surface; response fields trimmed where appropriate for agents.
+- **Hardening:** HTTPS-only calls to the EasyDeploy API; optional `MCP_SERVICE_TOKEN` for the HTTP MCP surface; response fields trimmed where appropriate for agents; query values (OAuth codes, state, PKCE values) left out of the access log; `Cache-Control: no-store` on token and registration responses.
 
 For **production** and **SOC 2–sensitive** setups, prefer self-hosting so your data stays within your own infrastructure. The hosted connector at `https://mcp.easydeploy.ai/mcp` is fine for most users.
 
@@ -177,7 +177,7 @@ pip install .
 | `EDA_COGNITO_USER_POOL_ID`         | OAuth    | Cognito user pool that issues access tokens for the EasyDeploy API.                             |
 | `EDA_COGNITO_CLIENT_ID`            | OAuth    | App client ID expected in the access token's `client_id` claim.                                 |
 | `EDA_COGNITO_REGION`               | No       | AWS region for the user pool (default `us-east-1`).                                             |
-| `EDA_REPORT_MAX_WAIT_SECONDS`      | No       | `get_model_report` poll budget (default and maximum `150`).                                     |
+| `EDA_REPORT_MAX_WAIT_SECONDS`      | No       | `get_model_report` poll budget in seconds (default `45`, maximum `150`).                        |
 | `EDA_REPORT_POLL_INTERVAL_SECONDS` | No       | Poll interval in seconds (default `10`).                                                        |
 | `HOST` / `PORT`                    | No       | HTTP bind (defaults `0.0.0.0` / `8080`).                                                        |
 | `EDA_TRUST_FORWARDED_HEADERS`      | No       | Set to `1` behind ALB/reverse proxy so RFC 9728 `resource` uses `https` (trusts `X-Forwarded-Proto`). |
@@ -242,8 +242,11 @@ Pick exactly one (setting both `EDA_OAUTH_ENABLED` and `MCP_SERVICE_TOKEN` raise
   same `Authorization: Bearer` header and forwarded as-is — the API is the
   source of truth for revocation. RFC 9728 metadata is published at
   `/.well-known/oauth-protected-resource`; RFC 8414 proxy metadata includes
-  **`registration_endpoint`**, and **`POST /oauth/register`** returns the static
-  Cognito MCP **`EDA_COGNITO_CLIENT_ID`** (RFC 7591-style, public client). 401
+  **`registration_endpoint`** and `grant_types_supported`
+  (`authorization_code`, `refresh_token`), and **`POST /oauth/register`** returns the static
+  Cognito MCP **`EDA_COGNITO_CLIENT_ID`** (RFC 7591-style, public client), with
+  the requested `grant_types` it supports echoed back (`authorization_code` and
+  `refresh_token`; both when none are requested). 401
   responses include `WWW-Authenticate: Bearer …` so MCP clients can discover the
   auth server.
   Note: Cognito access tokens carry `client_id`, **not** `aud`; do not configure

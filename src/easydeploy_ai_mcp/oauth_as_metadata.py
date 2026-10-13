@@ -89,6 +89,9 @@ def build_proxy_authorization_server_metadata(
         # Actual handler returns the pre-created ``easydeploy-mcp-claude-oauth`` client id.
         "registration_endpoint": f"{mcp_issuer}/oauth/register",
         "response_types_supported": ["code"],
+        # RFC 8414 reads a missing value as authorization_code + implicit. Cognito
+        # issues refresh tokens on the code grant and ``/token`` forwards refreshes.
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "scopes_supported": ["openid", "email", "profile"],
         "token_endpoint_auth_methods_supported": methods,
         "code_challenge_methods_supported": ["S256"],

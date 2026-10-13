@@ -22,6 +22,8 @@ Pass the `model_version_id` and `input_data`: an object with every feature name 
 4. Call `run_batch_prediction` with the model version id and the scoring dataset version id, then `get_prediction` until COMPLETED, and download the file once, promptly (the token works once and expires after 15 minutes).
 5. Scored output above 9 MB cannot be downloaded: split large files into several datasets and score each.
 
+Columns the model was not trained on (ids, an old score, the true label) are ignored for scoring and come back unchanged in the downloaded CSV, in the original row order. So keep comparison columns in the scoring file instead of dropping them and joining them back; just don't name one `prediction` or start one with `probability_`, since those are written over.
+
 `list_predictions` lists earlier runs if you need to find one again.
 
 ## Apply the chosen threshold
