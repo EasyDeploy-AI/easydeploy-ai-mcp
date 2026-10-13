@@ -210,6 +210,7 @@ def test_oauth_authorization_server_returns_proxy_metadata(oauth_app):
     assert body["token_endpoint"] == "http://testserver/token"
     assert body["revocation_endpoint"].endswith("/oauth2/revoke")
     assert body["response_types_supported"] == ["code"]
+    assert body["grant_types_supported"] == ["authorization_code", "refresh_token"]
     assert body["scopes_supported"] == ["openid", "email", "profile"]
     assert body["code_challenge_methods_supported"] == ["S256"]
     assert "none" in body["token_endpoint_auth_methods_supported"]
@@ -237,7 +238,8 @@ def test_oauth_register_returns_static_cognito_client(oauth_app):
     body = r.json()
     assert body["client_id"] == CLIENT_ID
     assert body["token_endpoint_auth_method"] == "none"
-    assert body["grant_types"] == ["authorization_code"]
+    # No grant_types requested: both grants the Cognito client supports.
+    assert body["grant_types"] == ["authorization_code", "refresh_token"]
     assert body["response_types"] == ["code"]
     assert "https://claude.ai/api/mcp/auth_callback" in body["redirect_uris"]
 
@@ -247,6 +249,41 @@ def test_oauth_register_accepts_empty_body(oauth_app):
         r = client.post("/oauth/register", content=b"")
     assert r.status_code == 201
     assert r.json()["client_id"] == CLIENT_ID
+    assert r.json()["grant_types"] == ["authorization_code", "refresh_token"]
+
+
+@pytest.mark.parametrize("path", ["/register", "/oauth/register"])
+@pytest.mark.parametrize(
+    ("requested", "granted"),
+    [
+        # What Claude sends; it used to get authorization_code back on its own.
+        (["authorization_code", "refresh_token"], ["authorization_code", "refresh_token"]),
+        (["refresh_token", "authorization_code"], ["authorization_code", "refresh_token"]),
+        (["authorization_code"], ["authorization_code"]),
+        (["authorization_code", "client_credentials"], ["authorization_code"]),
+        # Nothing supported, nothing usable, or nothing at all: the server's own set.
+        (["client_credentials"], ["authorization_code", "refresh_token"]),
+        ([], ["authorization_code", "refresh_token"]),
+        ("authorization_code", ["authorization_code", "refresh_token"]),
+        ([{"grant": "refresh_token"}, None], ["authorization_code", "refresh_token"]),
+    ],
+)
+def test_register_echoes_the_supported_grant_types_requested(
+    oauth_app, path, requested, granted
+):
+    with TestClient(oauth_app.app) as client:
+        r = client.post(
+            path,
+            json={
+                "client_name": "Claude",
+                "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+                "grant_types": requested,
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "none",
+            },
+        )
+    assert r.status_code == 201
+    assert r.json()["grant_types"] == granted
 
 
 def test_proxy_authorize_redirects_to_cognito_with_query(oauth_app):

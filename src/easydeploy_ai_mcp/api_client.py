@@ -4,37 +4,207 @@ Thin async HTTP client for the EasyDeploy REST API.
 
 Import this module when you need to call the EDA API from Python without going through the MCP server.
 
-All functions raise httpx.HTTPStatusError on non-2xx responses.
-Callers decide how to handle errors; this module never swallows them.
+All functions raise EasyDeployAPIError (an httpx.HTTPStatusError) on non-2xx
+responses, with a message that says what failed and why (see _raise_for_status),
+and ValueError before any request when an id argument is not a well-formed id
+(see require_id). Callers decide how to handle errors; this module never
+swallows them.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from contextlib import asynccontextmanager
+from itertools import pairwise
 from typing import AsyncIterator
+from urllib.parse import quote, unquote
 
 import httpx
 
 from .defaults import DEFAULT_EDA_API_BASE
 
+# ── Errors ─────────────────────────────────────────────────────────────────────
+#
+# An error's message is all an agent sees of it: FastMCP hands str(exc) to the
+# model as the tool error. So every non-2xx response becomes an
+# EasyDeployAPIError naming the method, the path, the status and the API's own
+# code and message, or a short explanation of the status when the body has none.
+# Secrets stay out: the query string (where upload and download tokens travel)
+# is never shown, and bearer tokens, API keys, JWTs and URL queries quoted in a
+# response body are redacted.
+
+
+class EasyDeployAPIError(httpx.HTTPStatusError):
+    """A non-2xx EasyDeploy API response, with a message an agent can act on.
+
+    Subclasses ``httpx.HTTPStatusError``, so ``except httpx.HTTPStatusError``
+    and ``exc.response.status_code`` keep working. ``str(exc)`` is the message.
+    """
+
+
+_MAX_DETAIL_CHARS = 500
+
+_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # A URL's query: presigned signatures and upload/download tokens live there.
+    (re.compile(r"(https?://[^\s?#\"'<>]+)\?[^\s\"'<>]*"), r"\1?[redacted]"),
+    (re.compile(r"(?i)\b((?:upload|download)token)=[^&\s\"'<>]+"), r"\1=[redacted]"),
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer [redacted]"),
+    (re.compile(r"\beda_live_[A-Za-z0-9_-]+"), "eda_live_[redacted]"),
+    # JWTs, such as Cognito access tokens.
+    (re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*"), "[redacted token]"),
+)
+
+
+def _redact(text: str) -> str:
+    for pattern, replacement in _REDACTIONS:
+        text = pattern.sub(replacement, text)
+    return text
+
 
 def _eda_api_error_detail(response: httpx.Response) -> str:
-    """Best-effort message from EasyDeploy JSON error body for MCP / logs."""
+    """The API's own explanation of an error response, or ``""`` when it gives none.
+
+    Reads the EasyDeploy shape ``{"error": {"code", "message", "requestId"}}``,
+    ``{"error": "..."}``, and the ``message`` or ``detail`` that API Gateway and
+    proxies send. A plain-text body counts; an empty or HTML body does not.
+    """
     try:
-        j = response.json()
-        if isinstance(j, dict):
-            err = j.get("error")
-            if isinstance(err, dict):
-                parts = [err.get("code"), err.get("message"), err.get("requestId")]
-                line = " | ".join(str(p) for p in parts if p)
-                if line:
-                    return line
+        body = response.json()
+    except ValueError:
+        body = None
+    parts: list[str] = []
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            parts = [str(err[k]) for k in ("code", "message") if err.get(k)]
+            if err.get("requestId"):
+                parts.append(f"request id {err['requestId']}")
+        elif isinstance(err, str) and err.strip():
+            parts = [err]
+        if not parts:
+            parts = [
+                str(body[k]) for k in ("message", "Message", "detail")
+                if isinstance(body.get(k), str) and body[k].strip()
+            ][:1]
+    elif body is None:
         text = response.text
-        return (text[:1200] if text else "") or response.reason_phrase
-    except Exception:
-        text = response.text
-        return (text[:1200] if text else "") or response.reason_phrase
+        if not text.lstrip().startswith("<"):
+            parts = [text]
+    detail = " | ".join(" ".join(p.split()) for p in parts if p.strip())
+    detail = _redact(detail)
+    if len(detail) > _MAX_DETAIL_CHARS:
+        detail = detail[: _MAX_DETAIL_CHARS - 1] + "…"
+    return detail
+
+
+#: Path collection → the tool argument its id comes from, for 404 messages.
+_PATH_ID_NAMES = {
+    "projects": "project_id",
+    "datasets": "dataset_id",
+    "versions": "version_id",
+    "models": "model_id",
+    "training-jobs": "job_id",
+    "predictions": "prediction_id",
+    "uploads": "upload_request_id",
+}
+#: Path segments after a collection that name an action, not an id.
+_PATH_ACTIONS = frozenset(
+    {"url", "from-url", "data", "complete-upload", "download", "report", "endpoints"}
+)
+
+
+def _ids_in_path(path: str) -> dict[str, str]:
+    segments = [s for s in path.split("/") if s]
+    ids: dict[str, str] = {}
+    for collection, value in pairwise(segments):
+        name = _PATH_ID_NAMES.get(collection)
+        if name and value not in _PATH_ID_NAMES and value not in _PATH_ACTIONS:
+            ids[name] = unquote(value)
+    return ids
+
+
+def _status_explanation(status: int, ids: dict[str, str]) -> str:
+    """What a status means for the caller, when the API body does not say."""
+    if status in (400, 422):
+        return "The API rejected the request as invalid; check the arguments."
+    if status == 401:
+        return (
+            "Not authenticated: the sign-in has expired or the API key is invalid. "
+            "Reconnect EasyDeploy (or set a valid EDA_API_KEY) and retry."
+        )
+    if status == 403:
+        return (
+            "Not allowed for this account or plan, or the record belongs to another "
+            "account."
+        )
+    if status == 404:
+        named = [f"{name} {value[:40]!r}" for name, value in ids.items()]
+        if not named:
+            what = "An id in the request does"
+        elif len(named) == 1:
+            what = f"{named[0]} does"
+        else:
+            what = f"One of {', '.join(named)} does"
+        return (
+            f"Not found: {what} not exist or is not visible to this account. Use ids "
+            "returned by the EasyDeploy list and get tools."
+        )
+    if status == 409:
+        return "Conflict with the record's current state; check its status before retrying."
+    if status == 413:
+        return (
+            "Too large for the API. The upload gateway takes files up to 6 MB; larger "
+            "files go by URL with upload_from_url (up to 256 MB)."
+        )
+    if status == 429:
+        return "Rate limited by the EasyDeploy API; wait a few seconds and retry."
+    if status >= 500:
+        return "EasyDeploy API error on the server side; retry in a few seconds."
+    return "Unexpected response from the EasyDeploy API."
+
+
+#: Bodies that only restate the status, as API Gateway sends for its own errors.
+_GENERIC_DETAILS = frozenset({
+    "bad request", "unauthorized", "forbidden", "not found", "too many requests",
+    "internal server error", "bad gateway", "service unavailable",
+})
+
+
+def _is_generic(detail: str, reason: str) -> bool:
+    text = detail.strip(" .").lower()
+    return not text or text in _GENERIC_DETAILS or text == reason.strip().lower()
+
+
+def _raise_for_status(
+    response: httpx.Response, *, ids: dict[str, object] | None = None
+) -> None:
+    """Raise EasyDeployAPIError unless ``response`` is 2xx.
+
+    ``ids`` names ids sent in the body or query, so a 404 can say which ones were
+    looked up; ids in the path are found on their own.
+    """
+    if response.is_success:
+        return
+    request = response.request
+    path = request.url.path  # Never the query: upload and download tokens ride there.
+    named = _ids_in_path(path)
+    for name, value in (ids or {}).items():
+        if value and name not in named:
+            named[name] = str(value)
+    status = response.status_code
+    detail = _eda_api_error_detail(response)
+    explanation = _status_explanation(status, named)
+    if _is_generic(detail, response.reason_phrase):
+        detail = explanation
+    elif status == 401:
+        # Only the user can fix sign-in, whatever the API calls the failure.
+        detail = f"{detail}. {explanation}"
+    message = (
+        f"EasyDeploy API returned {status} {response.reason_phrase} for "
+        f"{request.method} {path}: {detail}"
+    )
+    raise EasyDeployAPIError(message, request=request, response=response)
 
 
 @asynccontextmanager
@@ -51,6 +221,30 @@ def _require_https(url: str, label: str = "URL") -> None:
             f"Refusing to use non-HTTPS {label}: {url!r}. "
             "Encryption in transit is required."
         )
+
+
+# Every id the API issues is a UUID (optionally prefixed, e.g. ``pred_<uuid>``) or
+# an AWS Batch job id, so ids never need anything outside this set. Keeping ``/``,
+# ``.``, ``?``, ``#`` and ``%`` out stops an id argument such as ``../api-keys#``
+# from steering a request to a different route.
+_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
+def require_id(value: object, name: str) -> str:
+    """Return ``value`` ready to use as one URL path segment, or raise ValueError.
+
+    Accepts only 1-128 characters of letters, digits, ``_`` and ``-`` (whole
+    string, no surrounding whitespace). The result is also percent-encoded,
+    which is a no-op for accepted ids and keeps the path safe if the pattern
+    is ever widened. ``name`` is the argument name used in the error message.
+    """
+    if not isinstance(value, str) or not _ID_RE.fullmatch(value):
+        shown = value[:40] + "..." if isinstance(value, str) and len(value) > 40 else value
+        raise ValueError(
+            f"{name} must be 1-128 letters, digits, '-' or '_' "
+            f"(an id returned by the EasyDeploy API); got {shown!r}"
+        )
+    return quote(value, safe="")
 
 
 def normalize_api_base(raw: str) -> str:
@@ -107,7 +301,7 @@ async def get_account_status(
             headers=_headers(api_key, caller_channel),
             timeout=10.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -139,7 +333,7 @@ async def list_projects(
             headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -151,13 +345,14 @@ async def get_project(
     caller_channel: str = "",
 ) -> dict:
     """GET /projects/{projectId} — single project if accessible."""
+    url = f"{base_url}/projects/{require_id(project_id, 'project_id')}"
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/projects/{project_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -179,7 +374,7 @@ async def create_project(
             json=body,
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -192,14 +387,15 @@ async def update_project(
     caller_channel: str = "",
 ) -> dict:
     """PATCH /projects/{projectId} — body { name?, description? }."""
+    url = f"{base_url}/projects/{require_id(project_id, 'project_id')}"
     async with _secure_client() as client:
         resp = await client.patch(
-            f"{base_url}/projects/{project_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             json=body,
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -215,14 +411,15 @@ async def create_dataset(
     POST /projects/{projectId}/datasets — creates Dataset + first DatasetVersion (raw).
     body: name, s3Key, fileSize required; id?, description?, type? optional.
     """
+    url = f"{base_url}/projects/{require_id(project_id, 'project_id')}/datasets"
     async with _secure_client() as client:
         resp = await client.post(
-            f"{base_url}/projects/{project_id}/datasets",
+            url,
             headers=_headers(api_key, caller_channel),
             json=body,
             timeout=120.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -238,20 +435,18 @@ async def complete_dataset_upload(
     POST /projects/{projectId}/datasets/complete-upload
     body: { uploadRequestId, name, datasetId?, datasetType?, description? }
     """
+    url = f"{base_url}/projects/{require_id(project_id, 'project_id')}/datasets/complete-upload"
     async with _secure_client() as client:
         resp = await client.post(
-            f"{base_url}/projects/{project_id}/datasets/complete-upload",
+            url,
             headers=_headers(api_key, caller_channel),
             json=body,
             timeout=120.0,
         )
-        if resp.is_error:
-            detail = _eda_api_error_detail(resp)
-            raise httpx.HTTPStatusError(
-                f"{resp.status_code} {resp.reason_phrase} for {resp.request.url!r}\n{detail}",
-                request=resp.request,
-                response=resp,
-            )
+        _raise_for_status(resp, ids={
+            "upload_request_id": body.get("uploadRequestId"),
+            "dataset_id": body.get("datasetId"),
+        })
         return resp.json()["data"]
 
 
@@ -263,13 +458,14 @@ async def list_datasets(
     caller_channel: str = "",
 ) -> list:
     """GET /projects/{projectId}/datasets"""
+    url = f"{base_url}/projects/{require_id(project_id, 'project_id')}/datasets"
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/projects/{project_id}/datasets",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=30.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -282,13 +478,17 @@ async def get_dataset(
     caller_channel: str = "",
 ) -> dict:
     """GET /projects/{projectId}/datasets/{datasetId}"""
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/datasets/{require_id(dataset_id, 'dataset_id')}"
+    )
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/projects/{project_id}/datasets/{dataset_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -302,14 +502,18 @@ async def update_dataset(
     caller_channel: str = "",
 ) -> dict:
     """PATCH /projects/{projectId}/datasets/{datasetId} — body { name?, description? }."""
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/datasets/{require_id(dataset_id, 'dataset_id')}"
+    )
     async with _secure_client() as client:
         resp = await client.patch(
-            f"{base_url}/projects/{project_id}/datasets/{dataset_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             json=body,
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -330,14 +534,18 @@ async def create_dataset_version(
     body keys: s3Key, fileSize, version_type, qa_metadata (optional)
     Returns the full response data dict.
     """
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/datasets/{require_id(dataset_id, 'dataset_id')}/versions"
+    )
     async with _secure_client() as client:
         resp = await client.post(
-            f"{base_url}/projects/{project_id}/datasets/{dataset_id}/versions",
+            url,
             headers=_headers(api_key, caller_channel),
             json=body,
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -350,10 +558,11 @@ async def list_dataset_versions(
     caller_channel: str = "",
 ) -> list:
     """GET dataset versions. Uses flat ``/datasets/{datasetId}/versions`` when project_id is empty."""
+    did = require_id(dataset_id, "dataset_id")
     path = (
-        f"{base_url}/projects/{project_id.strip()}/datasets/{dataset_id}/versions"
+        f"{base_url}/projects/{require_id(project_id.strip(), 'project_id')}/datasets/{did}/versions"
         if project_id.strip()
-        else f"{base_url}/datasets/{dataset_id}/versions"
+        else f"{base_url}/datasets/{did}/versions"
     )
     async with _secure_client() as client:
         resp = await client.get(
@@ -361,7 +570,7 @@ async def list_dataset_versions(
             headers=_headers(api_key, caller_channel),
             timeout=30.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -375,13 +584,18 @@ async def get_dataset_version(
     caller_channel: str = "",
 ) -> dict:
     """GET /projects/{projectId}/datasets/{datasetId}/versions/{versionId}"""
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/datasets/{require_id(dataset_id, 'dataset_id')}"
+        f"/versions/{require_id(version_id, 'version_id')}"
+    )
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/projects/{project_id}/datasets/{dataset_id}/versions/{version_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -400,14 +614,19 @@ async def patch_dataset_version(
     body keys: qa_status
     Returns the updated version object.
     """
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/datasets/{require_id(dataset_id, 'dataset_id')}"
+        f"/versions/{require_id(version_id, 'version_id')}"
+    )
     async with _secure_client() as client:
         resp = await client.patch(
-            f"{base_url}/projects/{project_id}/datasets/{dataset_id}/versions/{version_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             json=body,
             timeout=10.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -431,9 +650,13 @@ async def get_upload_url(
     and a ``fallback`` string describing what to do when no channel works from
     the caller's sandbox.
     """
-    payload: dict[str, str] = {"filename": filename, "projectId": project_id}
+    # Not path segments, but the API builds the upload's S3 key from both ids.
+    payload: dict[str, str] = {
+        "filename": filename,
+        "projectId": require_id(project_id, "project_id"),
+    }
     if dataset_id:
-        payload["datasetId"] = dataset_id
+        payload["datasetId"] = require_id(dataset_id, "dataset_id")
     async with _secure_client() as client:
         resp = await client.post(
             f"{base_url}/uploads/url",
@@ -441,7 +664,7 @@ async def get_upload_url(
             json=payload,
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, ids={"project_id": project_id, "dataset_id": dataset_id})
         return resp.json()["data"]
 
 
@@ -465,7 +688,7 @@ async def upload_from_url(
     is not in ``URL_ISSUED``.
     """
     payload = {
-        "uploadRequestId": upload_request_id.strip(),
+        "uploadRequestId": require_id(upload_request_id.strip(), "upload_request_id"),
         "sourceUrl": source_url.strip(),
     }
     async with _secure_client() as client:
@@ -475,13 +698,7 @@ async def upload_from_url(
             json=payload,
             timeout=30.0,
         )
-        if resp.is_error:
-            detail = _eda_api_error_detail(resp)
-            raise httpx.HTTPStatusError(
-                f"{resp.status_code} {resp.reason_phrase} for {resp.request.url!r}\n{detail}",
-                request=resp.request,
-                response=resp,
-            )
+        _raise_for_status(resp, ids={"upload_request_id": upload_request_id})
         return resp.json()["data"]
 
 
@@ -500,19 +717,14 @@ async def get_upload_status(
     ``projectId``, ``datasetId``, and when available ``sizeBytes``, ``rowCount``,
     ``error``, ``datasetVersionId``, ``sourceType``, plus timestamps.
     """
+    url = f"{base_url}/uploads/{require_id(upload_request_id.strip(), 'upload_request_id')}"
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/uploads/{upload_request_id.strip()}",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
-        if resp.is_error:
-            detail = _eda_api_error_detail(resp)
-            raise httpx.HTTPStatusError(
-                f"{resp.status_code} {resp.reason_phrase} for {resp.request.url!r}\n{detail}",
-                request=resp.request,
-                response=resp,
-            )
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -531,7 +743,7 @@ async def upload_to_s3(
             },
             timeout=120.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
 
 
 # ── Training ───────────────────────────────────────────────────────────────────
@@ -556,7 +768,10 @@ async def submit_training_job(
             json=body,
             timeout=30.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, ids={
+            "model_version_id": body.get("modelVersionId"),
+            "dataset_version_id": body.get("datasetVersionId"),
+        })
         return resp.json()["data"]
 
 
@@ -575,13 +790,14 @@ async def get_training_status(
       - ``trainingTimeSeconds``: wall-clock training seconds once the job has stopped; null while running
       - ``modelVersionId``: from the job environment when present
     """
+    url = f"{base_url}/training-jobs/{require_id(job_id, 'job_id')}"
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/training-jobs/{job_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=10.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -607,7 +823,11 @@ async def run_prediction(
             json=body,
             timeout=30.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, ids={
+            "model_version_id": body.get("modelVersionId"),
+            "dataset_version_id": body.get("datasetVersionId"),
+            "project_id": body.get("projectId"),
+        })
         return resp.json()["data"]
 
 
@@ -619,13 +839,14 @@ async def get_prediction(
     caller_channel: str = "",
 ) -> dict:
     """GET /predictions/{predictionId}"""
+    url = f"{base_url}/predictions/{require_id(prediction_id, 'prediction_id')}"
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/predictions/{prediction_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -637,13 +858,14 @@ async def get_prediction_download(
     caller_channel: str = "",
 ) -> dict:
     """GET /predictions/{predictionId}/download"""
+    url = f"{base_url}/predictions/{require_id(prediction_id, 'prediction_id')}/download"
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/predictions/{prediction_id}/download",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=20.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -663,7 +885,7 @@ async def list_predictions(
             params=params,
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, ids={"project_id": project_id})
         return resp.json()["data"]
 
 
@@ -678,13 +900,14 @@ async def list_models(
     caller_channel: str = "",
 ) -> list:
     """GET /projects/{projectId}/models"""
+    url = f"{base_url}/projects/{require_id(project_id, 'project_id')}/models"
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/projects/{project_id}/models",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=10.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -697,13 +920,17 @@ async def list_model_versions(
     caller_channel: str = "",
 ) -> list:
     """GET /projects/{projectId}/models/{modelId}/versions"""
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/models/{require_id(model_id, 'model_id')}/versions"
+    )
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/projects/{project_id}/models/{model_id}/versions",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -716,13 +943,17 @@ async def get_model(
     caller_channel: str = "",
 ) -> dict:
     """GET /projects/{projectId}/models/{modelId}"""
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/models/{require_id(model_id, 'model_id')}"
+    )
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/projects/{project_id}/models/{model_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -734,13 +965,14 @@ async def get_model_by_id(
     caller_channel: str = "",
 ) -> dict:
     """GET /models/{modelId} — same payload as nested GET; project resolved server-side."""
+    url = f"{base_url}/models/{require_id(model_id, 'model_id')}"
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/models/{model_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -754,14 +986,18 @@ async def update_model(
     caller_channel: str = "",
 ) -> dict:
     """PATCH /projects/{projectId}/models/{modelId} — body { name?, description? }."""
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/models/{require_id(model_id, 'model_id')}"
+    )
     async with _secure_client() as client:
         resp = await client.patch(
-            f"{base_url}/projects/{project_id}/models/{model_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             json=body,
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -775,13 +1011,18 @@ async def get_model_version(
     caller_channel: str = "",
 ) -> dict:
     """GET /projects/{projectId}/models/{modelId}/versions/{versionId}"""
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/models/{require_id(model_id, 'model_id')}"
+        f"/versions/{require_id(version_id, 'version_id')}"
+    )
     async with _secure_client() as client:
         resp = await client.get(
-            f"{base_url}/projects/{project_id}/models/{model_id}/versions/{version_id}",
+            url,
             headers=_headers(api_key, caller_channel),
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -794,14 +1035,15 @@ async def create_model(
     caller_channel: str = "",
 ) -> dict:
     """POST /projects/{projectId}/models — body { name, description? }."""
+    url = f"{base_url}/projects/{require_id(project_id, 'project_id')}/models"
     async with _secure_client() as client:
         resp = await client.post(
-            f"{base_url}/projects/{project_id}/models",
+            url,
             headers=_headers(api_key, caller_channel),
             json=body,
             timeout=15.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]
 
 
@@ -818,14 +1060,18 @@ async def create_model_version(
     POST /projects/{projectId}/models/{modelId}/versions
     body: { datasetVersionId, targetFeature, timeSeriesMode?, timeColumn? }
     """
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/models/{require_id(model_id, 'model_id')}/versions"
+    )
     async with _secure_client() as client:
         resp = await client.post(
-            f"{base_url}/projects/{project_id}/models/{model_id}/versions",
+            url,
             headers=_headers(api_key, caller_channel),
             json=body,
             timeout=30.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, ids={"dataset_version_id": body.get("datasetVersionId")})
         return resp.json()["data"]
 
 
@@ -860,10 +1106,11 @@ async def get_model_report(
     params: dict[str, str] = {"scope": scope}
     if model_version_id.strip():
         params["versionId"] = model_version_id.strip()
+    mid = require_id(model_id, "model_id")
     path = (
-        f"{base_url}/projects/{project_id.strip()}/models/{model_id}/report"
+        f"{base_url}/projects/{require_id(project_id.strip(), 'project_id')}/models/{mid}/report"
         if project_id.strip()
-        else f"{base_url}/models/{model_id}/report"
+        else f"{base_url}/models/{mid}/report"
     )
     async with _secure_client() as client:
         resp = await client.get(
@@ -872,7 +1119,7 @@ async def get_model_report(
             params=params,
             timeout=60.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp, ids={"model_version_id": model_version_id})
         payload = resp.json()
         data = payload.get("data")
         meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
@@ -900,12 +1147,16 @@ async def deploy_endpoint(
     caller_channel: str = "",
 ) -> dict:
     """POST /projects/{projectId}/models/{modelId}/endpoints"""
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/models/{require_id(model_id, 'model_id')}/endpoints"
+    )
     async with _secure_client() as client:
         resp = await client.post(
-            f"{base_url}/projects/{project_id}/models/{model_id}/endpoints",
+            url,
             headers=_headers(api_key, caller_channel),
             json={},
             timeout=30.0,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return resp.json()["data"]

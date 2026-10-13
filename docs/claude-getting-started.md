@@ -50,9 +50,11 @@ File uploads and some tool calls reach EasyDeploy over the network. On **Claude 
 
 1. Open **Settings → Capabilities**.
 2. Turn on **Allow network egress**.
-3. Under the domain allowlist, add this entry exactly (including the leading `*.`):
+3. Under the domain allowlist, add this one host exactly:
 
-   `*.execute-api.us-east-1.amazonaws.com`
+   `api.easydeploy.ai`
+
+   That is the only host uploads to the public production server go to; allow it exactly, nothing wider. A server pointed at another EasyDeploy API (one set with `EDA_API_BASE`) needs that API's host instead, and the `start_upload` runbook names the exact host to allow.
 
 The domain allowlist UI is available on **paid** Claude plans.
 
@@ -60,7 +62,7 @@ The domain allowlist UI is available on **paid** Claude plans.
 
 ## Start here: the `get_started` playbook
 
-The EasyDeploy connector has 28 tools. The first one Claude calls is `get_started`: it returns the EasyDeploy data-science playbook, step by step, from framing the problem to using the model's predictions. Claude calls it before any other EasyDeploy tool and again whenever you start a new modeling task, and it can ask for a single step (`prepare`, `split`, `upload`, `train`, `validate`, `predict`). The playbook is updated on EasyDeploy's side, so Claude always reads the current version; you do not need to reconnect the connector to pick up changes.
+The EasyDeploy connector has 28 tools. The one to start a modeling task with is `get_started`: it returns the EasyDeploy data-science playbook, step by step, from framing the problem to using the model's predictions, and Claude can ask it for a single step (`prepare`, `split`, `upload`, `train`, `validate`, `predict`). If Claude starts working without it, ask it to read the EasyDeploy playbook first. The playbook is updated on EasyDeploy's side, so Claude always reads the current version; you do not need to reconnect the connector to pick up changes.
 
 ## You are the data scientist
 
@@ -82,18 +84,18 @@ Claude opens an upload session with `start_upload` and then uses the best byte c
 `start_upload` declares `_meta: {"openai/fileParams": ["file"]}`, so the host hands EasyDeploy a download link for a file in the sandbox. No network access is needed from the sandbox. The session moves to `RECEIVING`, and Claude polls `get_upload_status` until `READY`, then calls `complete_upload`.
 
 **2. Gateway `curl` — the default on Claude Code, Cowork, and claude.ai or Desktop with egress.**
-`start_upload` returns a ready-made `curl_command`. Claude runs it in bash and polls `get_upload_status`. The gateway takes files up to **6 MB** and answers **413** above that; there is no chunking, so a larger file uses one of the other routes.
+`start_upload` returns a ready-made `curl_command`, the request that sends your file to EasyDeploy. Claude runs it in the shell where the file is and polls `get_upload_status`. The gateway takes files up to **6 MB** and answers **413** above that; there is no chunking, so a larger file uses one of the other routes.
 
 **3. Fetch from a share link — no sandbox egress, file already shareable.**
 Claude calls `upload_from_url` with a **Google Sheets or Drive link set to "anyone with the link"**, an OpenAI file link, or another allowlisted host. EasyDeploy fetches the bytes server-side, up to **256 MB**.
 
-Claude then waits for `get_upload_status` to report `READY` — every file passes the CSV validator before it becomes a dataset version — and registers it with `complete_upload`. If the status comes back `REJECTED`, the response says which check failed so Claude can fix the file and start over.
+Claude then waits for `get_upload_status` to report `READY` — every file passes the CSV validator before it becomes a dataset version — and registers it with `complete_upload`. Retrying `complete_upload` is safe: if the upload is already registered it returns the existing dataset version, and a 409 only means another call for the same upload is still finishing. If the status comes back `REJECTED`, the response says which check failed so Claude can fix the file and start over.
 
 **New dataset or new version?** If Claude starts the upload without a dataset id, `complete_upload` creates a new dataset. If it passes an existing dataset's id, the file becomes a new version of that dataset and keeps the dataset's current name. `qa_status` is informational and does not gate anything. `version_type` matters in one case: `submit_training_job` with an explicit `dataset_version_id` rejects a `raw` version. Omit `dataset_version_id` to train on the model version's own dataset.
 
 ### If no channel works: the model builder
 
-When the host has neither network egress nor a file bridge, Claude does **not** try to carry your data through the chat. Instead it saves the training file, gives it to you as a download, and sends you to:
+When the host has neither network egress nor a file bridge, Claude does **not** try to carry your data through the chat. Instead it saves the training file, gives it to you as a download, and sends you to the web model builder. The link comes from the `fallback` text in the `start_upload` result, so it always matches the environment you are connected to — for example:
 
 **[https://www.easydeploy.ai/model-builder](https://www.easydeploy.ai/model-builder)**
 

@@ -26,6 +26,21 @@ def test_build_proxy_authorization_server_metadata_minimal():
     assert "revocation_endpoint" not in body
 
 
+def test_build_proxy_advertises_the_refresh_token_grant():
+    """Left out, RFC 8414 means authorization_code + implicit: no refresh."""
+    body = oauth_as_metadata.build_proxy_authorization_server_metadata(
+        mcp_issuer="https://mcp.example.com",
+        cognito_oidc={
+            "authorization_endpoint": "https://auth.example.com/oauth2/authorize",
+            "token_endpoint": "https://auth.example.com/oauth2/token",
+            # Cognito's own document lists implicit and client_credentials too;
+            # this client is a public PKCE client, so those are not advertised.
+            "grant_types_supported": ["authorization_code", "implicit", "client_credentials"],
+        },
+    )
+    assert body["grant_types_supported"] == ["authorization_code", "refresh_token"]
+
+
 def test_build_proxy_includes_revocation_when_present():
     body = oauth_as_metadata.build_proxy_authorization_server_metadata(
         mcp_issuer="https://mcp.example.com/",

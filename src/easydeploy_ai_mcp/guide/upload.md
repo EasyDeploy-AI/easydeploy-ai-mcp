@@ -7,13 +7,13 @@ Upload each file in its own session: train, test, and validation if you have one
 1. **Host file parameter.** If your host lets you attach a file to `start_upload`'s `file` parameter, do that. EasyDeploy fetches the bytes itself and the session goes straight to RECEIVING, with no network needed from your sandbox.
 2. **Gateway PUT.** Call `start_upload` without `file`. It returns `curl_command`: if you can run shell commands with network access, replace FILE_PATH with the file's path and run it. The gateway takes at most 6 MB and answers 413 above that. Do not split a file into parts.
 3. **Share link.** If the command fails with a connection error, your sandbox has no network. If your prepared train or test file is at a Google Sheets or Google Drive link shared with anyone who has the link, or at a file link your host provides, call `upload_from_url` with the `upload_request_id` and that URL. EasyDeploy fetches up to 256 MB. This channel is only for prepared files: a link to raw data is a source to download and prepare first (section `prepare`).
-4. **Model builder.** With none of the above: save the file, give it to the user as a download, and ask them to upload it at https://www.easydeploy.ai/model-builder. Then ask for the dataset name they entered or the dataset URL the page shows, find it with `list_datasets`, and check its row count against your file. That upload is already a dataset, so do not call `complete_upload` for it. Never guess which dataset is theirs.
+4. **Model builder.** With none of the above: save the file, give it to the user as a download, and send them to the web model builder using the `fallback` text from the `start_upload` result, which carries the right model-builder URL (for example www.easydeploy.ai/model-builder). Then ask for the dataset name they entered or the dataset URL the page shows, find it with `list_datasets`, and check its row count against your file. That upload is already a dataset, so do not call `complete_upload` for it. Never guess which dataset is theirs.
 
 `start_upload` returns `next_steps` with this runbook and the ids filled in. Follow it.
 
 ## Finish each upload
 
-Poll `get_upload_status` every few seconds until the status is READY. On REJECTED, read `error`, fix the file, and open a new session with `start_upload`. On EXPIRED, open a new session. Then call `complete_upload` with the project, the `upload_request_id`, a descriptive name ("churn 2025Q3 train") and the `dataset_type`.
+Poll `get_upload_status` every few seconds until the status is READY. On REJECTED, read `error`, fix the file, and open a new session with `start_upload`. On EXPIRED, open a new session. Then call `complete_upload` with the project, the `upload_request_id`, a descriptive name ("churn 2025Q3 train") and the `dataset_type`. Retrying `complete_upload` is safe: on a session that is already CONSUMED it returns the existing dataset version, and a 409 means another call for the session is still running, so wait a few seconds and retry.
 
 ## dataset_type
 
