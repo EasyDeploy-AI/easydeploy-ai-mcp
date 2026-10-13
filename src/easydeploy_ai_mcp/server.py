@@ -1178,10 +1178,11 @@ async def get_model_report(
 
     Default response is **summary** only (token-efficient). Set full_report=true for full detail.
 
-    The report is generated after training finishes, so this tool waits for it for up to
-    150 s (``EDA_REPORT_MAX_WAIT_SECONDS``, never more than 150). If it is still being
-    generated then, the result has ``timed_out: true`` and ``next_steps``: nothing failed,
-    call get_model_report again to keep waiting.
+    The report is generated after training finishes, so this tool waits for it: 45 s by
+    default (the server's ``EDA_REPORT_MAX_WAIT_SECONDS``, never more than 150 s), since
+    some hosts end a tool call at 60 s. If it is still being generated then, the result
+    has ``timed_out: true`` and ``next_steps``: nothing failed, call get_model_report
+    again to keep waiting.
 
     **How the model was validated.** Model search scores candidates by
     cross-validation: 10-fold stratified shuffled CV on ROC-AUC for classifiers,
@@ -1210,7 +1211,7 @@ async def get_model_report(
     # Poll ModelVersion.edaReportStatus (set by generate_eda_report Lambda) before reading S3.
     max_wait_seconds = min(
         _MAX_BLOCKING_SECONDS,
-        max(0, int(os.environ.get("EDA_REPORT_MAX_WAIT_SECONDS", str(_MAX_BLOCKING_SECONDS)))),
+        max(0, int(os.environ.get("EDA_REPORT_MAX_WAIT_SECONDS", str(_DEFAULT_BLOCKING_SECONDS)))),
     )
     poll_interval_seconds = float(os.environ.get("EDA_REPORT_POLL_INTERVAL_SECONDS", "10"))
 
@@ -1300,10 +1301,14 @@ async def get_model_report(
 
 # Waiting tools hold an MCP call open, so the model cannot ask for an unbounded
 # wait or a tight polling loop. Out-of-range values are clamped, not refused.
-# _MAX_BLOCKING_SECONDS is the longest a single tool call may block. MCP hosts
-# cut long tool calls (Claude ends one at about 180 s), so a blocking tool must
-# return before that with its "still running, call again" result; a call the
-# host kills returns only an error.
+# MCP hosts end long tool calls, and they differ in when: one was seen ending
+# calls at 60 s. A call the host ends returns only an error, without the tool's
+# "still running, call again" result or its warning not to resubmit. So a wait
+# lasts _DEFAULT_BLOCKING_SECONDS by default, well under 60 s, and a caller on a
+# host that allows longer calls can ask for up to _MAX_BLOCKING_SECONDS. The
+# poll intervals (10 s for training and reports, 2-5 s for predictions) still
+# fit several checks into the default.
+_DEFAULT_BLOCKING_SECONDS = 45
 _MAX_BLOCKING_SECONDS = 150
 _MIN_POLL_INTERVAL_SECONDS = 2.0
 
@@ -1338,6 +1343,9 @@ async def submit_training_job(
     """
     Submit a training job for a model version.
 
+    Each call starts a separate training job and spends one training credit;
+    ``get_training_status`` follows a job already submitted, by its ``job_id``.
+
     **Track completion:** Poll ``list_model_versions`` for the model and watch the target
     version's ``status`` until it reaches TRAINING_COMPLETED or TRAINING_FAILED (same as the
     web UI). This is the most reliable approach across MCP hosts.
@@ -1367,10 +1375,11 @@ async def get_training_status(
     job_id: str,
     wait: bool = False,
     timeout_seconds: Annotated[int, Field(description=(
-        "With wait=true, how long to block, in seconds (default 150). Values above "
-        "150 are clamped to 150 so the call returns before MCP hosts end it (about "
-        "3 minutes); call get_training_status again to keep waiting."
-    ))] = _MAX_BLOCKING_SECONDS,
+        "With wait=true, how long to block, in seconds (default 45, at most 150; "
+        "larger values are clamped). Hosts end long tool calls at different times, "
+        "some at 60 s, so the default returns well before that; call "
+        "get_training_status again to keep waiting."
+    ))] = _DEFAULT_BLOCKING_SECONDS,
     poll_interval_seconds: float = 10.0,
 ) -> dict[str, Any]:
     """
@@ -1385,8 +1394,8 @@ async def get_training_status(
 
     Set **wait=true** to block until the job reaches a terminal state (COMPLETE or
     FAILED). Polls every ``poll_interval_seconds`` (default 10 s) for up to
-    ``timeout_seconds`` (default and maximum 150 s, so the call returns before MCP hosts
-    end it). Training can take from minutes to several hours depending on the plan and
+    ``timeout_seconds`` (45 s by default, at most 150 s; some hosts end a tool call at
+    60 s). Training can take from minutes to several hours depending on the plan and
     the data. If the timeout expires, the last polled status is returned with
     ``timed_out: true`` and ``next_steps``: the job is still running, so call this
     tool again with the same job_id to keep waiting — do not resubmit the training job.
@@ -1439,10 +1448,11 @@ async def run_prediction(
     target_feature: str = "",
     wait_for_result: bool = True,
     max_wait_seconds: Annotated[int, Field(description=(
-        "With wait_for_result=true, how long to wait, in seconds (default 150). Values "
-        "above 150 are clamped to 150 so the call returns before MCP hosts end it "
-        "(about 3 minutes); poll get_prediction to keep waiting."
-    ))] = _MAX_BLOCKING_SECONDS,
+        "With wait_for_result=true, how long to wait, in seconds (default 45, at most "
+        "150; larger values are clamped). Hosts end long tool calls at different "
+        "times, some at 60 s, so the default returns well before that; poll "
+        "get_prediction to keep waiting."
+    ))] = _DEFAULT_BLOCKING_SECONDS,
     poll_interval_seconds: Annotated[float, Field(description=(
         "Seconds between status checks while waiting (default 2.0). Values below "
         "2 are raised to 2."
@@ -1451,14 +1461,18 @@ async def run_prediction(
     """
     Run a single ad-hoc prediction against a trained model version.
 
+    Each call is a new prediction and spends a prediction credit; ``get_prediction``
+    follows one still running, by its ``prediction_id``.
+
     ``project_id`` and ``target_feature`` are auto-resolved from the model version
     record when omitted. By default waits and returns the predicted label or value
     inline. It returns no probability, so the model's default rule decides the label;
     when a decision depends on a threshold you chose, score the records with
     ``run_batch_prediction``, whose output has probability columns. Set
     ``wait_for_result=false`` to return immediately with prediction_id. A wait lasts
-    at most 150 s; if the prediction is still running then, the result has
-    ``timed_out: true`` and ``next_steps``: poll ``get_prediction`` to keep waiting.
+    ``max_wait_seconds`` (45 s by default, at most 150 s); if the prediction is still
+    running then, the result has ``timed_out: true`` and ``next_steps``: poll
+    ``get_prediction`` to keep waiting.
     """
     body: dict[str, Any] = {"modelVersionId": model_version_id, "input": input_data}
     if project_id.strip():
@@ -1518,10 +1532,11 @@ async def run_batch_prediction(
     target_feature: str = "",
     wait_for_result: bool = False,
     max_wait_seconds: Annotated[int, Field(description=(
-        "With wait_for_result=true, how long to wait, in seconds (default 150). Values "
-        "above 150 are clamped to 150 so the call returns before MCP hosts end it "
-        "(about 3 minutes); poll get_prediction to keep waiting."
-    ))] = _MAX_BLOCKING_SECONDS,
+        "With wait_for_result=true, how long to wait, in seconds (default 45, at most "
+        "150; larger values are clamped). Hosts end long tool calls at different "
+        "times, some at 60 s, so the default returns well before that; poll "
+        "get_prediction to keep waiting."
+    ))] = _DEFAULT_BLOCKING_SECONDS,
     poll_interval_seconds: Annotated[float, Field(description=(
         "Seconds between status checks while waiting (default 5.0). Values below "
         "2 are raised to 2."
@@ -1529,6 +1544,9 @@ async def run_batch_prediction(
 ) -> dict[str, Any]:
     """
     Score an entire dataset against a trained model version.
+
+    Each call starts a new batch job and spends one prediction credit per row;
+    ``get_prediction`` follows one already started, by its ``prediction_id``.
 
     ``project_id`` and ``target_feature`` are auto-resolved from the model version
     record when omitted. ``dataset_version_id`` identifies both the input file and
@@ -1551,9 +1569,10 @@ async def run_batch_prediction(
 
     Returns immediately by default (fire-and-poll). Use
     ``get_prediction(prediction_id)`` to check status (includes ``downloadReady``
-    flag for completed batches). Set ``wait_for_result=true`` to block for up to
-    150 s; if the batch is still running then, the result has ``timed_out: true``
-    and ``next_steps``: poll ``get_prediction`` to keep waiting.
+    flag for completed batches). Set ``wait_for_result=true`` to block for
+    ``max_wait_seconds`` (45 s by default, at most 150 s); if the batch is still
+    running then, the result has ``timed_out: true`` and ``next_steps``: poll
+    ``get_prediction`` to keep waiting.
     """
     body: dict[str, Any] = {
         "modelVersionId": model_version_id,
