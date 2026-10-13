@@ -234,10 +234,13 @@ def _dataset_ui_url(project_id: str, dataset_id: str) -> str:
 
 
 
+# probabilities (ad-hoc) and classLabels (ad-hoc and batch) come with a completed
+# classifier prediction: per-row probability_<class> values, and the label each
+# <class> stands for. Older predictions and regressors have neither.
 _PREDICTION_SAFE_KEYS = frozenset({
     "id", "status", "type", "projectId", "modelVersionId",
     "createdAt", "startTime", "endTime", "inferenceLatency",
-    "output", "error",
+    "output", "error", "probabilities", "classLabels",
 })
 
 
@@ -1466,10 +1469,14 @@ async def run_prediction(
 
     ``project_id`` and ``target_feature`` are auto-resolved from the model version
     record when omitted. By default waits and returns the predicted label or value
-    inline. It returns no probability, so the model's default rule decides the label;
-    when a decision depends on a threshold you chose, score the records with
-    ``run_batch_prediction``, whose output has probability columns. Set
-    ``wait_for_result=false`` to return immediately with prediction_id. A wait lasts
+    in ``output``. For a classifier the result also has ``probabilities``, one
+    ``{"probability_<class>": p}`` object per entry of ``output``, named like
+    ``run_batch_prediction``'s CSV columns, and ``classLabels``, the label each
+    ``<class>`` stands for: ``{"0": "B", "1": "M"}`` for a text target,
+    ``{"0": 0, "1": 1}`` for a 0/1 target. ``output`` follows the model's default
+    rule, so a threshold you chose applies to the probability, not to ``output``.
+    Regressors return neither. Set ``wait_for_result=false`` to return immediately
+    with prediction_id. A wait lasts
     ``max_wait_seconds`` (45 s by default, at most 150 s); if the prediction is still
     running then, the result has ``timed_out: true`` and ``next_steps``: poll
     ``get_prediction`` to keep waiting.
@@ -1560,7 +1567,9 @@ async def run_batch_prediction(
     the holdout metrics and decision threshold yourself from it, since
     EasyDeploy does not return them. For a string target the probability
     columns are named by encoded class index (``probability_0``,
-    ``probability_1``, ... in sorted label order), not by label. Columns the
+    ``probability_1``, ... in sorted label order), not by label; the completed
+    prediction's ``classLabels``, from ``get_prediction``, maps each index to its
+    label. Columns the
     model was not trained on, such as ids, are ignored for scoring and kept in
     the output, so leave them in to join results back; every training feature
     must be present or the job fails naming the missing one. The download
@@ -1633,11 +1642,17 @@ async def get_prediction(prediction_id: str) -> dict[str, Any]:
     """
     Fetch prediction status and result by prediction id.
 
-    - Ad-hoc completed: ``output`` contains the predicted label or value.
+    - Ad-hoc completed: ``output`` has the predicted label or value per row. For a
+      classifier, ``probabilities`` has each row's ``probability_<class>`` values,
+      in the same order.
     - Batch completed: ``download_url`` and ``curl_command`` are included
       automatically. ``curl_command`` is the HTTP GET that downloads the scored
       CSV through EasyDeploy's tokenized gateway; it carries a short-lived
       download token, never the API key.
+    - Classifiers, ad-hoc and batch, also return ``classLabels``: the label each
+      ``<class>`` in ``probability_<class>`` stands for, such as
+      ``{"0": "B", "1": "M"}``. Regressors, models that give no probabilities, and
+      predictions completed before these fields existed return neither field.
     """
     raw = await api_client.get_prediction(prediction_id, **_kw())
     out = _sanitize_prediction(raw)
