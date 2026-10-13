@@ -680,6 +680,126 @@ async def test_eda_mcp_run_batch_prediction_waits_and_sanitizes(eda_mcp_server, 
     assert "owner" not in result.data
 
 
+# ── Class probabilities and labels ───────────────────────────────────────────
+#
+# A completed classifier prediction carries ``probabilities`` (ad-hoc: one
+# object per entry of ``output``, keyed like the batch CSV columns) and
+# ``classLabels`` (ad-hoc and batch: the label behind each probability_<class>).
+
+_ADHOC_CLASSIFIED = {
+    "id": "pred_1", "status": "COMPLETED", "type": "ADHOC", "projectId": "proj_1",
+    "output": ["M"],
+    "probabilities": [{"probability_0": 0.0759, "probability_1": 0.9241}],
+    "classLabels": {"0": "B", "1": "M"},
+    "adhocProbabilities": "[[0.0759, 0.9241]]",
+    "adhocOutput": '["M"]',
+}
+
+
+def test_sanitize_prediction_keeps_probabilities_and_class_labels():
+    out = _eda_mod._sanitize_prediction(dict(_ADHOC_CLASSIFIED))
+    assert out["probabilities"] == [{"probability_0": 0.0759, "probability_1": 0.9241}]
+    assert out["classLabels"] == {"0": "B", "1": "M"}
+    assert out["output"] == ["M"]
+    # Only the names the API returns pass; stored raw fields do not.
+    assert "adhocProbabilities" not in out and "adhocOutput" not in out
+
+
+@pytest.mark.asyncio
+async def test_run_prediction_returns_probabilities_and_class_labels(eda_mcp_server, fake_clock):
+    submit_mock = AsyncMock(return_value={"id": "pred_1", "status": "PENDING"})
+    get_mock = AsyncMock(return_value=dict(_ADHOC_CLASSIFIED))
+    with patch("easydeploy_ai_mcp.server.api_client.run_prediction", submit_mock), \
+         patch("easydeploy_ai_mcp.server.api_client.get_prediction", get_mock):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("run_prediction", {
+                "model_version_id": "mv_1", "input_data": {"radius_mean": 17.99},
+            })
+
+    assert not result.is_error
+    assert result.data["output"] == ["M"]
+    assert result.data["probabilities"] == [{"probability_0": 0.0759, "probability_1": 0.9241}]
+    assert result.data["classLabels"] == {"0": "B", "1": "M"}
+    assert "adhocProbabilities" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_batch_prediction_returns_class_labels(eda_mcp_server):
+    payload = {
+        "id": "pred_b1", "status": "COMPLETED", "type": "BATCH",
+        "outputDataPath": "s3://bucket/out.csv",
+        "classLabels": {"0": "high", "1": "low", "2": "medium"},
+    }
+    with patch("easydeploy_ai_mcp.server.api_client.get_prediction", AsyncMock(return_value=payload)), \
+         patch("easydeploy_ai_mcp.server.api_client.list_predictions",
+               AsyncMock(return_value=[dict(payload)])):
+        async with Client(eda_mcp_server) as client:
+            got = await client.call_tool("get_prediction", {"prediction_id": "pred_b1"})
+            listed = await client.call_tool("list_predictions", {"project_id": "proj_1"})
+    for data in (got.data, json.loads(listed.content[0].text)[0]):
+        assert data["classLabels"] == {"0": "high", "1": "low", "2": "medium"}
+        assert data["batch_output_available"] is True
+        assert "outputDataPath" not in data
+
+
+@pytest.mark.asyncio
+async def test_predictions_without_the_new_fields_still_work(eda_mcp_server, fake_clock):
+    """Regressors, and any API that does not send the fields yet, return neither."""
+    regression = {"id": "pred_1", "status": "COMPLETED", "type": "ADHOC", "output": [412.5]}
+    with patch("easydeploy_ai_mcp.server.api_client.run_prediction",
+               AsyncMock(return_value={"id": "pred_1", "status": "PENDING"})), \
+         patch("easydeploy_ai_mcp.server.api_client.get_prediction",
+               AsyncMock(return_value=dict(regression))), \
+         patch("easydeploy_ai_mcp.server.api_client.list_predictions",
+               AsyncMock(return_value=[dict(regression)])):
+        async with Client(eda_mcp_server) as client:
+            ran = await client.call_tool("run_prediction", {
+                "model_version_id": "mv_1", "input_data": {"sqft": 900},
+            })
+            got = await client.call_tool("get_prediction", {"prediction_id": "pred_1"})
+            listed = await client.call_tool("list_predictions", {})
+
+    for data in (ran.data, got.data, json.loads(listed.content[0].text)[0]):
+        assert data["output"] == [412.5]
+        assert "probabilities" not in data and "classLabels" not in data
+
+
+@pytest.mark.asyncio
+async def test_prediction_descriptions_explain_probabilities_and_class_labels(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    desc = {t.name: " ".join((t.description or "").split()) for t in tools}
+
+    rp = desc["run_prediction"]
+    assert "returns no probability" not in rp
+    assert '``{"probability_<class>": p}`` object per entry of ``output``' in rp
+    assert "``classLabels``" in rp and '``{"0": "B", "1": "M"}``' in rp and '``{"0": 0, "1": 1}``' in rp
+    assert "applies to the probability, not to ``output``" in rp
+    assert "Regressors return neither" in rp
+    rb = desc["run_batch_prediction"]
+    assert "probability_<class>" in rb
+    assert "``classLabels``, from ``get_prediction``, maps each index to its label" in rb
+    gp = desc["get_prediction"]
+    assert "``probabilities`` has each row's ``probability_<class>`` values" in gp
+    assert "Classifiers, ad-hoc and batch, also return ``classLabels``" in gp
+    assert "predictions completed before these fields existed return neither" in gp
+
+
+def test_guide_explains_probabilities_without_promising_them():
+    predict = _guide.read_section("predict")
+    validate = _guide.read_section("validate")
+    assert "returns no probability" not in predict
+    assert "`probabilities`" in predict and "`classLabels`" in predict
+    # The fields are not guaranteed (older predictions, models without probabilities).
+    assert "usually also has `probabilities`" in predict
+    assert "has no `probabilities`, score the records with `run_batch_prediction`" in predict
+    assert "a `run_prediction` result has the same key in `probabilities`" in predict
+    assert "`classLabels`, when the result has it, says which label `probability_1` stands for" in predict
+    assert "`classLabels` in the `get_prediction` result names each number's label" in validate
+    assert "without it, sorted order" in validate
+    assert _guide.GUIDE_RELEASE["guide_version"] == "1.6"
+
+
 @pytest.mark.asyncio
 async def test_eda_mcp_patch_dataset_version_updates_qa_status(eda_mcp_server):
     ver_payload = {"id": "ver_raw_01", "qa_status": "ready", "version_type": "raw"}
