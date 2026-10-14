@@ -234,10 +234,13 @@ def _dataset_ui_url(project_id: str, dataset_id: str) -> str:
 
 
 
+# probabilities (ad-hoc) and classLabels (ad-hoc and batch) come with a completed
+# classifier prediction: per-row probability_<class> values, and the label each
+# <class> stands for. Older predictions and regressors have neither.
 _PREDICTION_SAFE_KEYS = frozenset({
     "id", "status", "type", "projectId", "modelVersionId",
     "createdAt", "startTime", "endTime", "inferenceLatency",
-    "output", "error",
+    "output", "error", "probabilities", "classLabels",
 })
 
 
@@ -1179,7 +1182,7 @@ async def get_model_report(
     Default response is **summary** only (token-efficient). Set full_report=true for full detail.
 
     The report is generated after training finishes, so this tool waits for it: 45 s by
-    default (the server's ``EDA_REPORT_MAX_WAIT_SECONDS``, never more than 150 s), since
+    default (the server's ``EDA_REPORT_MAX_WAIT_SECONDS``, never more than 60 s), since
     some hosts end a tool call at 60 s. If it is still being generated then, the result
     has ``timed_out: true`` and ``next_steps``: nothing failed, call get_model_report
     again to keep waiting.
@@ -1302,14 +1305,16 @@ async def get_model_report(
 # Waiting tools hold an MCP call open, so the model cannot ask for an unbounded
 # wait or a tight polling loop. Out-of-range values are clamped, not refused.
 # MCP hosts end long tool calls, and they differ in when: one was seen ending
-# calls at 60 s. A call the host ends returns only an error, without the tool's
+# calls at 60 s, and Claude cancelled 150 s waits after 230 s while 45 s waits
+# returned. A call the host ends returns only an error, without the tool's
 # "still running, call again" result or its warning not to resubmit. So a wait
-# lasts _DEFAULT_BLOCKING_SECONDS by default, well under 60 s, and a caller on a
-# host that allows longer calls can ask for up to _MAX_BLOCKING_SECONDS. The
-# poll intervals (10 s for training and reports, 2-5 s for predictions) still
-# fit several checks into the default.
+# lasts _DEFAULT_BLOCKING_SECONDS by default and never more than
+# _MAX_BLOCKING_SECONDS; a caller cannot pick a wait a host will cut off. A full
+# 60 s wait ends a little after 60 s (its last status check), so the default is
+# the one that clears a 60 s host limit. The poll intervals (10 s for training
+# and reports, 2-5 s for predictions) still fit several checks into it.
 _DEFAULT_BLOCKING_SECONDS = 45
-_MAX_BLOCKING_SECONDS = 150
+_MAX_BLOCKING_SECONDS = 60
 _MIN_POLL_INTERVAL_SECONDS = 2.0
 
 
@@ -1375,7 +1380,7 @@ async def get_training_status(
     job_id: str,
     wait: bool = False,
     timeout_seconds: Annotated[int, Field(description=(
-        "With wait=true, how long to block, in seconds (default 45, at most 150; "
+        "With wait=true, how long to block, in seconds (default 45, at most 60; "
         "larger values are clamped). Hosts end long tool calls at different times, "
         "some at 60 s, so the default returns well before that; call "
         "get_training_status again to keep waiting."
@@ -1394,7 +1399,7 @@ async def get_training_status(
 
     Set **wait=true** to block until the job reaches a terminal state (COMPLETE or
     FAILED). Polls every ``poll_interval_seconds`` (default 10 s) for up to
-    ``timeout_seconds`` (45 s by default, at most 150 s; some hosts end a tool call at
+    ``timeout_seconds`` (45 s by default, at most 60 s; some hosts end a tool call at
     60 s). Training can take from minutes to several hours depending on the plan and
     the data. If the timeout expires, the last polled status is returned with
     ``timed_out: true`` and ``next_steps``: the job is still running, so call this
@@ -1449,7 +1454,7 @@ async def run_prediction(
     wait_for_result: bool = True,
     max_wait_seconds: Annotated[int, Field(description=(
         "With wait_for_result=true, how long to wait, in seconds (default 45, at most "
-        "150; larger values are clamped). Hosts end long tool calls at different "
+        "60; larger values are clamped). Hosts end long tool calls at different "
         "times, some at 60 s, so the default returns well before that; poll "
         "get_prediction to keep waiting."
     ))] = _DEFAULT_BLOCKING_SECONDS,
@@ -1466,11 +1471,15 @@ async def run_prediction(
 
     ``project_id`` and ``target_feature`` are auto-resolved from the model version
     record when omitted. By default waits and returns the predicted label or value
-    inline. It returns no probability, so the model's default rule decides the label;
-    when a decision depends on a threshold you chose, score the records with
-    ``run_batch_prediction``, whose output has probability columns. Set
-    ``wait_for_result=false`` to return immediately with prediction_id. A wait lasts
-    ``max_wait_seconds`` (45 s by default, at most 150 s); if the prediction is still
+    in ``output``. For a classifier the result also has ``probabilities``, one
+    ``{"probability_<class>": p}`` object per entry of ``output``, named like
+    ``run_batch_prediction``'s CSV columns, and ``classLabels``, the label each
+    ``<class>`` stands for: ``{"0": "B", "1": "M"}`` for a text target,
+    ``{"0": 0, "1": 1}`` for a 0/1 target. ``output`` follows the model's default
+    rule, so a threshold you chose applies to the probability, not to ``output``.
+    Regressors return neither. Set ``wait_for_result=false`` to return immediately
+    with prediction_id. A wait lasts
+    ``max_wait_seconds`` (45 s by default, at most 60 s); if the prediction is still
     running then, the result has ``timed_out: true`` and ``next_steps``: poll
     ``get_prediction`` to keep waiting.
     """
@@ -1533,7 +1542,7 @@ async def run_batch_prediction(
     wait_for_result: bool = False,
     max_wait_seconds: Annotated[int, Field(description=(
         "With wait_for_result=true, how long to wait, in seconds (default 45, at most "
-        "150; larger values are clamped). Hosts end long tool calls at different "
+        "60; larger values are clamped). Hosts end long tool calls at different "
         "times, some at 60 s, so the default returns well before that; poll "
         "get_prediction to keep waiting."
     ))] = _DEFAULT_BLOCKING_SECONDS,
@@ -1560,7 +1569,9 @@ async def run_batch_prediction(
     the holdout metrics and decision threshold yourself from it, since
     EasyDeploy does not return them. For a string target the probability
     columns are named by encoded class index (``probability_0``,
-    ``probability_1``, ... in sorted label order), not by label. Columns the
+    ``probability_1``, ... in sorted label order), not by label; the completed
+    prediction's ``classLabels``, from ``get_prediction``, maps each index to its
+    label. Columns the
     model was not trained on, such as ids, are ignored for scoring and kept in
     the output, so leave them in to join results back; every training feature
     must be present or the job fails naming the missing one. The download
@@ -1570,7 +1581,7 @@ async def run_batch_prediction(
     Returns immediately by default (fire-and-poll). Use
     ``get_prediction(prediction_id)`` to check status (includes ``downloadReady``
     flag for completed batches). Set ``wait_for_result=true`` to block for
-    ``max_wait_seconds`` (45 s by default, at most 150 s); if the batch is still
+    ``max_wait_seconds`` (45 s by default, at most 60 s); if the batch is still
     running then, the result has ``timed_out: true`` and ``next_steps``: poll
     ``get_prediction`` to keep waiting.
     """
@@ -1633,11 +1644,17 @@ async def get_prediction(prediction_id: str) -> dict[str, Any]:
     """
     Fetch prediction status and result by prediction id.
 
-    - Ad-hoc completed: ``output`` contains the predicted label or value.
+    - Ad-hoc completed: ``output`` has the predicted label or value per row. For a
+      classifier, ``probabilities`` has each row's ``probability_<class>`` values,
+      in the same order.
     - Batch completed: ``download_url`` and ``curl_command`` are included
       automatically. ``curl_command`` is the HTTP GET that downloads the scored
       CSV through EasyDeploy's tokenized gateway; it carries a short-lived
       download token, never the API key.
+    - Classifiers, ad-hoc and batch, also return ``classLabels``: the label each
+      ``<class>`` in ``probability_<class>`` stands for, such as
+      ``{"0": "B", "1": "M"}``. Regressors, models that give no probabilities, and
+      predictions completed before these fields existed return neither field.
     """
     raw = await api_client.get_prediction(prediction_id, **_kw())
     out = _sanitize_prediction(raw)

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-14
+
+### Added
+
+- **Ad-hoc class probabilities and class labels** (playbook 1.6). Uses the `probabilities` and `classLabels` that `GET /v1/predictions/{id}` now returns for a completed prediction. `probabilities` (ad-hoc) has one object per entry of `output`, keyed like `run_batch_prediction`'s CSV columns, for example `[{"probability_0": 0.0759, "probability_1": 0.9241}]`. `classLabels` (ad-hoc and batch) maps each `<class>` in `probability_<class>` to its label, for example `{"0": "B", "1": "M"}` for a text target or `{"0": 0, "1": 1}` for a 0/1 one. Both are on the prediction allowlist, so `run_prediction`, `run_batch_prediction` (when it waits), `get_prediction` and `list_predictions` pass them through when the API sends them; regressors, models that give no probabilities and older predictions have neither, and nothing changes for them. `run_prediction` no longer says it returns no probability: its description now explains both fields and that a chosen threshold applies to the probability, not to `output`. `run_batch_prediction` and `get_prediction` describe `classLabels`. The playbook's `predict` section drops the advice to batch-score even a few records for a threshold (unless a result has no `probabilities`), and `validate` reads labels from `classLabels` rather than assuming sorted order when it is there.
+
+### Changed
+
+- **Waits are capped at 60 s** (playbook 1.7). `get_training_status(wait=true)` (`timeout_seconds`), `run_prediction` and `run_batch_prediction` (`max_wait_seconds`) and `get_model_report` (`EDA_REPORT_MAX_WAIT_SECONDS`) still wait 45 s by default, but larger values are now clamped to 60 s instead of 150 s. Claude was seen cancelling 150 s waits after 230 s while 45 s waits returned, and another host ends tool calls at 60 s; a call the host ends reaches the agent as a bare error, without the `timed_out` result and its note not to resubmit. A full 60 s wait ends a little after 60 s, so the 45 s default is the one that clears a 60 s host limit.
+
 ## [0.4.0] - 2026-10-13
 
 ### Security
@@ -142,7 +152,8 @@ all. stdio users are unaffected beyond the `caller_channel` fix.
 - Optional `MCP_SERVICE_TOKEN` for gating the HTTP MCP surface; HTTPS-only calls to the EasyDeploy API.
 - `Dockerfile` for self-hosted deployments.
 
-[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.1.0...v0.2.0
