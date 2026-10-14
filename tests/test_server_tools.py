@@ -803,7 +803,7 @@ def test_guide_explains_probabilities():
     assert "`classLabels` says which label `probability_1` stands for" in predict
     assert "`classLabels` in the `get_prediction` result names each number's label." in validate
     assert "without it" not in validate
-    assert _guide.GUIDE_RELEASE["guide_version"] == "1.8"
+    assert _guide.GUIDE_RELEASE["guide_version"] == "1.9"
 
 
 @pytest.mark.asyncio

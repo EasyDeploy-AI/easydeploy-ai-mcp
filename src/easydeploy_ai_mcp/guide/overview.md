@@ -14,7 +14,7 @@ You are the data scientist. EasyDeploy is the platform: it searches and tunes mo
 6. **Upload each prepared file separately**: `start_upload`, send the bytes, poll `get_upload_status` until READY, then `complete_upload` with dataset_type "train" or "test". Section `upload`.
 7. **Train**: `create_model`, `create_model_version` on the train dataset version, `get_account_status`, `submit_training_job`, `get_training_status`, then `get_model_report`. Section `train`.
 8. **Validate on the holdout**: `run_batch_prediction` on the test dataset version, `get_prediction` to download the scored file, compute the metrics and choose the threshold yourself, and give the user a go or no-go. Section `validate`.
-9. **Predict** on new data: `run_prediction` for one record, `run_batch_prediction` for a file, and build outputs only from real prediction files. Section `predict`.
+9. **Promote and predict**: on a go, `set_model_alias` points an alias such as `production` at the validated version. Then `run_prediction` for one record, `run_batch_prediction` for a file (by `model_id` and `alias` for recurring scoring), and build outputs only from real prediction files. Section `predict`.
 
 ## Hard rules
 
