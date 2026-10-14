@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Playbook 1.8 states class probabilities plainly. The `predict` section said a classifier's single prediction "usually" has `probabilities` and, if not, to score the records with `run_batch_prediction`; agents read that as the old advice that single predictions return no probability. Now that the API returns `probabilities` and `classLabels` for every classifier prediction, it says one record is enough for a thresholded decision, and that only a regressor, or a classifier that gives no probability estimates, returns `output` alone. `validate` drops its fallback to sorted label order.
+
 ## [0.4.1] - 2026-10-14
 
 ### Added

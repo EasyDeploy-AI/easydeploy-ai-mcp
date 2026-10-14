@@ -12,7 +12,7 @@ A model version can score as soon as its status is TRAINING_COMPLETED. There is 
 
 ## One record: `run_prediction`
 
-Pass the `model_version_id` and `input_data`: an object with every feature name and its value, numbers as numbers and text as text. It costs one prediction credit and returns the predicted label or value in `output`, which follows the model's default rule. For a classifier the result usually also has `probabilities`, one object per entry of `output` with the same `probability_<class>` keys as the batch CSV columns, and `classLabels`, the label each `<class>` stands for, such as `{"0": "B", "1": "M"}` for a text target or `{"0": 0, "1": 1}` for a 0/1 one. A threshold you chose applies to the probability, not to `output`. If a classifier's result has no `probabilities`, score the records with `run_batch_prediction`, whose CSV carries the probability columns when the model gives them.
+Pass the `model_version_id` and `input_data`: an object with every feature name and its value, numbers as numbers and text as text. It costs one prediction credit and returns the predicted label or value in `output`, which follows the model's default rule. A classifier's result also has `probabilities`, one object per entry of `output` with the same `probability_<class>` keys as the batch CSV columns, and `classLabels`, the label each `<class>` stands for, such as `{"0": "B", "1": "M"}` for a text target or `{"0": 0, "1": 1}` for a 0/1 one. So one record is enough for a decision on a threshold you chose: apply it to the probability, not to `output`. A regressor, or a classifier that gives no probability estimates, returns only `output`.
 
 ## A file: `run_batch_prediction`
 
@@ -28,7 +28,7 @@ Columns the model was not trained on (ids, an old score, the true label) are ign
 
 ## Apply the chosen threshold
 
-For a classifier, apply the threshold from section `validate` to the probability column, for example flag a row when `probability_1` is at or above the threshold; a `run_prediction` result has the same key in `probabilities`. `classLabels`, when the result has it, says which label `probability_1` stands for. Do not use the `prediction` column for decisions when you chose a threshold other than the model's default. For a regressor, report each prediction with the error margin measured on the holdout.
+For a classifier, apply the threshold from section `validate` to the probability column, for example flag a row when `probability_1` is at or above the threshold; a `run_prediction` result has the same key in `probabilities`. `classLabels` says which label `probability_1` stands for. Do not use the `prediction` column for decisions when you chose a threshold other than the model's default. For a regressor, report each prediction with the error margin measured on the holdout.
 
 ## Build outputs from real predictions only
 
