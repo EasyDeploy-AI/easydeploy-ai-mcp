@@ -797,7 +797,7 @@ def test_guide_explains_probabilities_without_promising_them():
     assert "`classLabels`, when the result has it, says which label `probability_1` stands for" in predict
     assert "`classLabels` in the `get_prediction` result names each number's label" in validate
     assert "without it, sorted order" in validate
-    assert _guide.GUIDE_RELEASE["guide_version"] == "1.6"
+    assert _guide.GUIDE_RELEASE["guide_version"] == "1.7"
 
 
 @pytest.mark.asyncio
@@ -2115,10 +2115,10 @@ async def test_eda_mcp_start_upload_gateway_result_is_an_allowlist(eda_mcp_serve
 
 
 def test_clamp_prediction_wait():
-    assert _eda_mod._clamp_prediction_wait(90, 2.0) == (90.0, 2.0)
-    assert _eda_mod._MAX_BLOCKING_SECONDS == 150
-    assert _eda_mod._clamp_prediction_wait(100_000, 0.01) == (150.0, 2.0)
-    assert _eda_mod._clamp_prediction_wait(151, 2.0) == (150.0, 2.0)
+    assert _eda_mod._clamp_prediction_wait(50, 2.0) == (50.0, 2.0)
+    assert _eda_mod._MAX_BLOCKING_SECONDS == 60
+    assert _eda_mod._clamp_prediction_wait(100_000, 0.01) == (60.0, 2.0)
+    assert _eda_mod._clamp_prediction_wait(61, 2.0) == (60.0, 2.0)
     assert _eda_mod._clamp_prediction_wait(-5, 0) == (0.0, 2.0)
 
 
@@ -2146,13 +2146,13 @@ async def test_eda_mcp_prediction_waits_are_clamped(eda_mcp_server, fake_clock, 
     assert not result.is_error
     assert result.data["timed_out"] is True
     assert set(fake_clock.sleeps) == {2.0}
-    assert fake_clock.now == 150.0
+    assert fake_clock.now == 60.0
     assert "get_prediction" in result.data["next_steps"]
     assert "prediction_id='pred_1'" in result.data["next_steps"]
     assert f"Do not call {tool} again" in result.data["next_steps"]
     props = next(t for t in tools if t.name == tool).inputSchema["properties"]
     assert props["max_wait_seconds"]["default"] == 45
-    assert "at most 150; larger values are clamped" in props["max_wait_seconds"]["description"]
+    assert "at most 60; larger values are clamped" in props["max_wait_seconds"]["description"]
     assert "poll get_prediction to keep waiting" in props["max_wait_seconds"]["description"]
     assert "raised to 2" in props["poll_interval_seconds"]["description"]
     assert "600" not in props["max_wait_seconds"]["description"]
@@ -2193,10 +2193,10 @@ async def test_eda_mcp_get_training_status_timeout_is_capped(eda_mcp_server, fak
 
     assert not result.is_error
     assert result.data["timed_out"] is True
-    assert fake_clock.now == 150.0
-    assert mock_fn.call_count == 16
+    assert fake_clock.now == 60.0
+    assert mock_fn.call_count == 7  # first check, then one every 10 s up to 60 s
     props = next(t for t in tools if t.name == "get_training_status").inputSchema["properties"]
-    assert "at most 150; larger values are clamped" in props["timeout_seconds"]["description"]
+    assert "at most 60; larger values are clamped" in props["timeout_seconds"]["description"]
     assert "call get_training_status again to keep waiting" in props["timeout_seconds"]["description"]
     assert "600" not in props["timeout_seconds"]["description"]
 
@@ -2216,17 +2216,17 @@ async def test_eda_mcp_get_training_status_wait_defaults_to_45(eda_mcp_server, f
 
 @pytest.mark.asyncio
 async def test_eda_mcp_waits_never_sleep_past_the_cap(eda_mcp_server, fake_clock):
-    # A poll interval that does not divide the budget must not overshoot 150 s.
+    # A poll interval that does not divide the budget must not overshoot 60 s.
     training = AsyncMock(return_value={"jobId": "job-1", "status": "RUNNING"})
     with patch("easydeploy_ai_mcp.server.api_client.get_training_status", training):
         async with Client(eda_mcp_server) as client:
             result = await client.call_tool("get_training_status", {
-                "job_id": "job-1", "wait": True, "poll_interval_seconds": 100,
+                "job_id": "job-1", "wait": True, "poll_interval_seconds": 40,
                 "timeout_seconds": 150,
             })
     assert result.data["timed_out"] is True
-    assert fake_clock.sleeps == [100.0, 50.0]
-    assert fake_clock.now == 150.0
+    assert fake_clock.sleeps == [40.0, 20.0]
+    assert fake_clock.now == 60.0
 
     fake_clock.now, fake_clock.sleeps = 0.0, []
     with patch("easydeploy_ai_mcp.server.api_client.run_prediction",
@@ -2237,16 +2237,16 @@ async def test_eda_mcp_waits_never_sleep_past_the_cap(eda_mcp_server, fake_clock
             result = await client.call_tool("run_batch_prediction", {
                 "model_version_id": "mv_1", "project_id": "proj_1",
                 "dataset_version_id": "dsv_1", "wait_for_result": True,
-                "poll_interval_seconds": 120, "max_wait_seconds": 150,
+                "poll_interval_seconds": 50, "max_wait_seconds": 150,
             })
     assert result.data["timed_out"] is True
-    assert fake_clock.sleeps == [120.0, 30.0]
-    assert fake_clock.now == 150.0
+    assert fake_clock.sleeps == [50.0, 10.0]
+    assert fake_clock.now == 60.0
 
 
 @pytest.mark.parametrize("env_value,expected", [
     (None, 45.0),           # unset: default 45
-    ("100000", 150.0),      # above the cap: clamped
+    ("100000", 60.0),      # above the cap: clamped
     ("30", 30.0),           # below the cap: kept
 ])
 @pytest.mark.asyncio
@@ -2280,7 +2280,7 @@ async def test_eda_mcp_get_model_report_wait_is_capped(
 
 # Each waiting tool, with the argument (or, for the report, the server setting)
 # that sets how long it blocks. Some hosts end a tool call at 60 s, so the default
-# has to return well before that; 150 s stays available where hosts allow it.
+# has to return well before that, and no request can ask for more than 60 s.
 _WAITING_TOOLS = {
     "get_training_status": ("timeout_seconds", {"job_id": "job-1", "wait": True}),
     "run_prediction": ("max_wait_seconds", {
@@ -2294,14 +2294,14 @@ _WAITING_TOOLS = {
 }
 
 
-@pytest.mark.parametrize("ask,blocked", [(None, 45.0), (100_000, 150.0)])
+@pytest.mark.parametrize("ask,blocked", [(None, 45.0), (100_000, 60.0)])
 @pytest.mark.parametrize("tool", sorted(_WAITING_TOOLS))
 @pytest.mark.asyncio
-async def test_every_waiting_tool_defaults_to_45_s_and_caps_at_150(
+async def test_every_waiting_tool_defaults_to_45_s_and_caps_at_60(
     eda_mcp_server, fake_clock, monkeypatch, tool, ask, blocked,
 ):
     assert _eda_mod._DEFAULT_BLOCKING_SECONDS <= 45  # well under a 60 s host limit
-    assert _eda_mod._MAX_BLOCKING_SECONDS == 150
+    assert _eda_mod._MAX_BLOCKING_SECONDS == 60
     knob, args = _WAITING_TOOLS[tool]
     args = dict(args)
     monkeypatch.delenv("EDA_REPORT_POLL_INTERVAL_SECONDS", raising=False)
@@ -2329,7 +2329,7 @@ async def test_every_waiting_tool_defaults_to_45_s_and_caps_at_150(
     if not knob.isupper():
         schema = next(t for t in tools if t.name == tool).inputSchema["properties"][knob]
         assert schema["default"] <= 45
-        assert "at most 150" in schema["description"]
+        assert "at most 60" in schema["description"]
         assert "150)" not in schema["description"] and "3 minutes" not in schema["description"]
 
 
