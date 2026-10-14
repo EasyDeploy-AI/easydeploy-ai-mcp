@@ -785,19 +785,20 @@ async def test_prediction_descriptions_explain_probabilities_and_class_labels(ed
     assert "predictions completed before these fields existed return neither" in gp
 
 
-def test_guide_explains_probabilities_without_promising_them():
+def test_guide_explains_probabilities():
     predict = _guide.read_section("predict")
     validate = _guide.read_section("validate")
+    # The API returns the fields for every classifier prediction, so the playbook
+    # states them plainly and no longer sends single records to batch scoring.
     assert "returns no probability" not in predict
-    assert "`probabilities`" in predict and "`classLabels`" in predict
-    # The fields are not guaranteed (older predictions, models without probabilities).
-    assert "usually also has `probabilities`" in predict
-    assert "has no `probabilities`, score the records with `run_batch_prediction`" in predict
+    assert "A classifier's result also has `probabilities`" in predict
+    assert "one record is enough for a decision on a threshold you chose" in predict
+    assert "usually" not in predict and "has no `probabilities`" not in predict
     assert "a `run_prediction` result has the same key in `probabilities`" in predict
-    assert "`classLabels`, when the result has it, says which label `probability_1` stands for" in predict
-    assert "`classLabels` in the `get_prediction` result names each number's label" in validate
-    assert "without it, sorted order" in validate
-    assert _guide.GUIDE_RELEASE["guide_version"] == "1.7"
+    assert "`classLabels` says which label `probability_1` stands for" in predict
+    assert "`classLabels` in the `get_prediction` result names each number's label." in validate
+    assert "without it" not in validate
+    assert _guide.GUIDE_RELEASE["guide_version"] == "1.8"
 
 
 @pytest.mark.asyncio

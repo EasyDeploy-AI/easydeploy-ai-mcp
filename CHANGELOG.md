@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-14
+
+### Changed
+
+- Playbook 1.8 states class probabilities plainly. The `predict` section said a classifier's single prediction "usually" has `probabilities` and, if not, to score the records with `run_batch_prediction`; agents read that as the old advice that single predictions return no probability. Now that the API returns `probabilities` and `classLabels` for every classifier prediction, it says one record is enough for a thresholded decision, and that only a regressor, or a classifier that gives no probability estimates, returns `output` alone. `validate` drops its fallback to sorted label order.
+
 ## [0.4.1] - 2026-10-14
 
 ### Added
@@ -152,7 +158,8 @@ all. stdio users are unaffected beyond the `caller_channel` fix.
 - Optional `MCP_SERVICE_TOKEN` for gating the HTTP MCP surface; HTTPS-only calls to the EasyDeploy API.
 - `Dockerfile` for self-hosted deployments.
 
-[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.2.0...v0.3.0
