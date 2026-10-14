@@ -1578,9 +1578,10 @@ async def run_batch_prediction(
     is capped at 9 MB, so keep test files small enough that their scored output
     fits, or split the test set across several batches.
 
-    Returns immediately by default (fire-and-poll). Use
-    ``get_prediction(prediction_id)`` to check status (includes ``downloadReady``
-    flag for completed batches). Set ``wait_for_result=true`` to block for
+    Returns immediately by default (fire-and-poll). ``get_prediction(prediction_id)``
+    reports the status; for a completed batch it also has
+    ``batch_output_available: true``, ``download_url`` and ``curl_command``.
+    Set ``wait_for_result=true`` to block for
     ``max_wait_seconds`` (45 s by default, at most 60 s); if the batch is still
     running then, the result has ``timed_out: true`` and ``next_steps``: poll
     ``get_prediction`` to keep waiting.
