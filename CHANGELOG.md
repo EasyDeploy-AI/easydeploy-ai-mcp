@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Ad-hoc class probabilities and class labels** (playbook 1.6). Requires the API change that adds `probabilities` and `classLabels` to a completed prediction from `GET /v1/predictions/{id}`; release this after that change is live. `probabilities` (ad-hoc) has one object per entry of `output`, keyed like `run_batch_prediction`'s CSV columns, for example `[{"probability_0": 0.0759, "probability_1": 0.9241}]`. `classLabels` (ad-hoc and batch) maps each `<class>` in `probability_<class>` to its label, for example `{"0": "B", "1": "M"}` for a text target or `{"0": 0, "1": 1}` for a 0/1 one. Both are on the prediction allowlist, so `run_prediction`, `run_batch_prediction` (when it waits), `get_prediction` and `list_predictions` pass them through when the API sends them; regressors, models that give no probabilities and older predictions have neither, and nothing changes for them. `run_prediction` no longer says it returns no probability: its description now explains both fields and that a chosen threshold applies to the probability, not to `output`. `run_batch_prediction` and `get_prediction` describe `classLabels`. The playbook's `predict` section drops the advice to batch-score even a few records for a threshold (unless a result has no `probabilities`), and `validate` reads labels from `classLabels` rather than assuming sorted order when it is there.
+
+### Changed
+
+- **Waits are capped at 60 s** (playbook 1.7). `get_training_status(wait=true)` (`timeout_seconds`), `run_prediction` and `run_batch_prediction` (`max_wait_seconds`) and `get_model_report` (`EDA_REPORT_MAX_WAIT_SECONDS`) still wait 45 s by default, but larger values are now clamped to 60 s instead of 150 s. Claude was seen cancelling 150 s waits after 230 s while 45 s waits returned, and another host ends tool calls at 60 s; a call the host ends reaches the agent as a bare error, without the `timed_out` result and its note not to resubmit. A full 60 s wait ends a little after 60 s, so the 45 s default is the one that clears a 60 s host limit.
+
 ## [0.4.0] - 2026-10-13
 
 ### Security
@@ -17,7 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Ad-hoc class probabilities and class labels** (playbook 1.6). Requires the API change that adds `probabilities` and `classLabels` to a completed prediction from `GET /v1/predictions/{id}`; release this after that change is live. `probabilities` (ad-hoc) has one object per entry of `output`, keyed like `run_batch_prediction`'s CSV columns, for example `[{"probability_0": 0.0759, "probability_1": 0.9241}]`. `classLabels` (ad-hoc and batch) maps each `<class>` in `probability_<class>` to its label, for example `{"0": "B", "1": "M"}` for a text target or `{"0": 0, "1": 1}` for a 0/1 one. Both are on the prediction allowlist, so `run_prediction`, `run_batch_prediction` (when it waits), `get_prediction` and `list_predictions` pass them through when the API sends them; regressors, models that give no probabilities and older predictions have neither, and nothing changes for them. `run_prediction` no longer says it returns no probability: its description now explains both fields and that a chosen threshold applies to the probability, not to `output`. `run_batch_prediction` and `get_prediction` describe `classLabels`. The playbook's `predict` section drops the advice to batch-score even a few records for a threshold (unless a result has no `probabilities`), and `validate` reads labels from `classLabels` rather than assuming sorted order when it is there.
 - **A title on every tool**, in both places a host may read it: the tool's top-level `title` in `tools/list` and `annotations.title`. The Claude connector directory asks for "a title" without naming the field. Each title is written once, in the tool's annotations (`_read_only(title)` / `_write(title, ...)`), and a small `_tool` wrapper around `mcp.tool` copies it to the tool's own `title`. For example, `get_started` is "Read the EasyDeploy playbook", `submit_training_job` is "Start model training", and the create-or-update tools are "Create or update project", "Create or update model" and "Create or update dataset version".
 - A test that holds every tool to the directory rules: a non-empty title, the same in `annotations.title`, a name of at most 64 characters, `readOnlyHint` true or `destructiveHint` set explicitly, and never both.
 
