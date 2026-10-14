@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-14
+
+### Fixed
+
+- `run_batch_prediction`'s description named a `downloadReady` flag on `get_prediction`, which is the API's field and never reaches the agent. It now names what `get_prediction` returns for a completed batch: `batch_output_available: true`, `download_url` and `curl_command`.
+
 ## [0.4.2] - 2026-10-14
 
 ### Changed
