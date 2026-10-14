@@ -1,7 +1,7 @@
 """EasyDeploy AI MCP server — REST tools for the EasyDeploy public API."""
 
 # Set before the server import: the server reports it as serverInfo.version.
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 from easydeploy_ai_mcp.server import EDA_MCP_TOOL_NAMES, mcp
 
