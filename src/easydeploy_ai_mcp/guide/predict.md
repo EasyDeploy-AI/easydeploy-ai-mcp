@@ -30,7 +30,7 @@ Don't name a column `prediction` or start one with `probability_`: those are wri
 
 An alias, such as `production`, is a named pointer to one version of a model. For recurring scoring, pass `model_id` and `alias` instead of `model_version_id`: promoting a new version then needs no change to the calls.
 
-- Promote only a version that passed section `validate`, with the user's agreement: `set_model_alias`, to `staging` first if the user checks there, then to `production`. If it warns that the columns or the target changed, show the user and call again with `confirm=true` only if they agree.
+- Promote only a version that passed section `validate`, with the user's agreement: `set_model_alias`, to `staging` first if the user checks there, then to `production`. If it warns that the columns or the target changed, show the user; only if they agree, call again with `confirm=true` and its `expected_current_model_version_id`.
 - `list_model_aliases` shows where each alias points.
 - A result's `modelVersionId` is the version that actually scored.
 - A predict-only API key can score by alias but cannot move one.

@@ -50,7 +50,8 @@ reads; on writes, destructiveHint=True when one can overwrite an existing record
   Models: create_model (pass model_id to update), get_model, create_model_version,
     list_models, list_model_versions, list_model_aliases, get_model_version,
     get_model_report (project_id optional — inferred from model_id),
-    set_model_alias (dry-runs first; confirm=true after the user reviews column changes)
+    set_model_alias (dry-runs first; confirm=true + expected_current_model_version_id
+      after the user reviews column changes)
   Training: submit_training_job, get_training_status
   Predictions: run_prediction, run_batch_prediction (model_version_id, or model_id + alias;
     project_id + target_feature auto-resolved),
@@ -1340,15 +1341,50 @@ async def get_model_report(
     return data
 
 
-def _alias_confirmation_next_steps(alias: str, model_version_id: str) -> str:
+#: What ``expected_current_model_version_id`` says for an alias that does not exist.
+_NO_ALIAS = "none"
+
+
+def _alias_expected_token(current: object) -> str:
+    """The ``expected_current_model_version_id`` value for a dry run's current version."""
+    return str(current) if current else _NO_ALIAS
+
+
+def _alias_confirmation_next_steps(alias: str, model_version_id: str, expected: str) -> str:
     return (
         f"Nothing was changed. Moving alias '{alias}' to model version "
         f"'{model_version_id}' changes what every caller using it is scored with. "
         "Show the user each warning (columns added or removed, a changed target) and "
-        "the version the alias points to now (current_model_version_id). Call "
-        "set_model_alias again with the same arguments and confirm=true only if the "
-        "user agrees."
+        "the version the alias points to now (current_model_version_id). Only if the "
+        "user agrees, call set_model_alias again with the same arguments, "
+        f"confirm=true and expected_current_model_version_id='{expected}'."
     )
+
+
+def _alias_moved_next_steps(alias: str, model_version_id: str, expected: str) -> str:
+    return (
+        f"Nothing was changed. Alias '{alias}' moved since the user approved: it no "
+        f"longer points where they looked (now {expected!r}). Show the user these "
+        "warnings and current_model_version_id again; only if they still agree, call "
+        f"set_model_alias with model_version_id='{model_version_id}', confirm=true "
+        f"and expected_current_model_version_id='{expected}'."
+    )
+
+
+def _alias_needs_confirmation(
+    check: dict, alias: str, model_id: str, model_version_id: str, next_steps: str
+) -> dict[str, Any]:
+    current = check.get("currentModelVersionId")
+    return {
+        "needs_confirmation": True,
+        "alias": check.get("alias", alias),
+        "model_id": model_id,
+        "model_version_id": model_version_id,
+        "current_model_version_id": current,
+        "expected_current_model_version_id": _alias_expected_token(current),
+        "warnings": check.get("warnings") or [],
+        "next_steps": next_steps,
+    }
 
 
 @_tool(_write("Set model alias", destructive=True, idempotent=True))
@@ -1361,6 +1397,12 @@ async def set_model_alias(
         "Write the alias even though the check found warnings. Set it only after "
         "the user has seen the warnings and agreed."
     ))] = False,
+    expected_current_model_version_id: Annotated[str, Field(description=(
+        "The current_model_version_id returned by the needs_confirmation result, or "
+        "the literal 'none' for a new alias. With confirm=true, the alias is written "
+        "only if it still points there; otherwise the tool returns "
+        "needs_confirmation again with the new state."
+    ))] = "",
 ) -> dict[str, Any]:
     """
     Point a model alias, such as ``staging`` or ``production``, at one of the
@@ -1381,32 +1423,53 @@ async def set_model_alias(
     kind of answer, so the tool writes nothing and returns
     ``needs_confirmation: true`` with ``warnings`` (``TRAINING_COLUMNS_CHANGED``
     with the ``added`` and ``removed`` columns, ``TARGET_FEATURE_CHANGED``,
-    ``TRAINING_COLUMNS_UNKNOWN``), ``current_model_version_id`` and
-    ``next_steps``. Show the user those changes and call again with
-    ``confirm=true`` only if they agree. Otherwise the alias is written and the
-    result has ``modelVersionId``, ``version``, ``previousModelVersionId``,
-    ``warnings`` and ``ui_url``.
+    ``TRAINING_COLUMNS_UNKNOWN``), ``current_model_version_id``,
+    ``expected_current_model_version_id`` and ``next_steps``. Show the user
+    those changes and call again with ``confirm=true`` and that
+    ``expected_current_model_version_id`` only if they agree. If the alias moved
+    in between, nothing is written and ``needs_confirmation`` comes back with
+    the new state. Otherwise the alias is written and the result has
+    ``modelVersionId``, ``version``, ``previousModelVersionId``, ``warnings``
+    and ``ui_url``.
 
     Needs a full-scope API key: a predict-only key gets 403 INSUFFICIENT_SCOPE,
     and only the user can supply a full-scope key. A 409 means the alias moved
-    at the same moment; check it with ``list_model_aliases`` before retrying.
+    at the same moment and nothing was written; call again without ``confirm``
+    to see where it points now.
     """
+    expected = expected_current_model_version_id.strip()
+    if confirm and not expected:
+        raise ValueError(
+            "confirm=true needs expected_current_model_version_id: the "
+            "expected_current_model_version_id (or current_model_version_id, 'none' "
+            "when null) from the needs_confirmation result the user approved. Call "
+            "set_model_alias without confirm to get it. Nothing was changed."
+        )
     check = await api_client.set_model_alias(
         project_id, model_id, alias, model_version_id, dry_run=True, **_kw()
     )
-    warnings = (check.get("warnings") if isinstance(check, dict) else None) or []
-    if warnings and not confirm:
-        return {
-            "needs_confirmation": True,
-            "alias": check.get("alias", alias),
-            "model_id": model_id,
-            "model_version_id": model_version_id,
-            "current_model_version_id": check.get("currentModelVersionId"),
-            "warnings": warnings,
-            "next_steps": _alias_confirmation_next_steps(alias, model_version_id),
-        }
+    if not isinstance(check, dict):
+        check = {}
+    current = check.get("currentModelVersionId") or None
+    warnings = check.get("warnings") or []
+    token = _alias_expected_token(current)
+    if confirm:
+        approved = None if expected.lower() == _NO_ALIAS else expected
+        if approved != current:
+            return _alias_needs_confirmation(
+                check, alias, model_id, model_version_id,
+                _alias_moved_next_steps(alias, model_version_id, token),
+            )
+    elif warnings:
+        return _alias_needs_confirmation(
+            check, alias, model_id, model_version_id,
+            _alias_confirmation_next_steps(alias, model_version_id, token),
+        )
+    # The server writes only if the alias still points where the check saw it, so
+    # a move by someone else in between is a 409, never a silent overwrite.
     data = await api_client.set_model_alias(
-        project_id, model_id, alias, model_version_id, **_kw()
+        project_id, model_id, alias, model_version_id,
+        expected_model_version_id=current, **_kw(),
     )
     if isinstance(data, dict):
         data["ui_url"] = _version_ui_url(project_id, model_id, data.get("version"))

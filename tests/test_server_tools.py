@@ -2554,8 +2554,10 @@ async def test_set_model_alias_with_warnings_needs_confirmation_and_writes_nothi
     assert data["alias"] == "production"
     assert data["model_id"] == "m_1" and data["model_version_id"] == "mv_4"
     assert data["current_model_version_id"] == "mv_3"
+    assert data["expected_current_model_version_id"] == "mv_3"
     assert data["warnings"] == [_COLUMNS_CHANGED]
     assert "confirm=true" in data["next_steps"]
+    assert "expected_current_model_version_id='mv_3'" in data["next_steps"]
     assert "Nothing was changed" in data["next_steps"]
 
 
@@ -2568,13 +2570,18 @@ async def test_set_model_alias_with_confirm_dry_runs_then_writes(eda_mcp_server)
     with patch("easydeploy_ai_mcp.server.api_client.set_model_alias", mock_fn), \
          patch.object(_eda_mod, "_UI_BASE_URL", "https://ui.example.com"):
         async with Client(eda_mcp_server) as client:
-            result = await client.call_tool("set_model_alias", {**_ALIAS_ARGS, "confirm": True})
+            result = await client.call_tool("set_model_alias", {
+                **_ALIAS_ARGS, "confirm": True, "expected_current_model_version_id": "mv_3",
+            })
 
     assert not result.is_error
     assert mock_fn.call_count == 2
     assert mock_fn.call_args_list[0].kwargs["dry_run"] is True
+    assert "expected_model_version_id" not in mock_fn.call_args_list[0].kwargs
     assert "dry_run" not in mock_fn.call_args_list[1].kwargs
     assert mock_fn.call_args_list[1].args == ("proj_1", "m_1", "production", "mv_4")
+    # The server re-checks the approved state when it writes.
+    assert mock_fn.call_args_list[1].kwargs["expected_model_version_id"] == "mv_3"
     assert result.data["modelVersionId"] == "mv_4"
     assert result.data["previousModelVersionId"] == "mv_3"
     assert "needs_confirmation" not in result.data
@@ -2592,8 +2599,106 @@ async def test_set_model_alias_without_warnings_writes_after_the_dry_run(eda_mcp
     assert mock_fn.call_count == 2
     assert mock_fn.call_args_list[0].kwargs["dry_run"] is True
     assert "dry_run" not in mock_fn.call_args_list[1].kwargs
+    # Even unconfirmed, the write only lands if the alias is still where the check saw it.
+    assert mock_fn.call_args_list[1].kwargs["expected_model_version_id"] == "mv_3"
     assert result.data["dryRun"] is False
     assert result.data["version"] == 4
+
+
+@pytest.mark.parametrize("expected", ["", "   "])
+@pytest.mark.asyncio
+async def test_set_model_alias_confirm_without_expected_id_raises_and_writes_nothing(
+    eda_mcp_server, expected,
+):
+    mock_fn = AsyncMock(return_value=_alias_result(warnings=[_COLUMNS_CHANGED], dry_run=True))
+    with patch("easydeploy_ai_mcp.server.api_client.set_model_alias", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool(
+                "set_model_alias",
+                {**_ALIAS_ARGS, "confirm": True, "expected_current_model_version_id": expected},
+                raise_on_error=False,
+            )
+
+    assert result.is_error
+    text = result.content[0].text
+    assert "expected_current_model_version_id" in text
+    assert "without confirm" in text
+    mock_fn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_model_alias_confirm_with_stale_expected_id_asks_again_and_writes_nothing(
+    eda_mcp_server,
+):
+    # The user approved moving production off mv_3, but it now points at mv_5.
+    moved = {**_alias_result(warnings=[_COLUMNS_CHANGED], dry_run=True),
+             "currentModelVersionId": "mv_5", "previousModelVersionId": "mv_5"}
+    mock_fn = AsyncMock(return_value=moved)
+    with patch("easydeploy_ai_mcp.server.api_client.set_model_alias", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("set_model_alias", {
+                **_ALIAS_ARGS, "confirm": True, "expected_current_model_version_id": "mv_3",
+            })
+
+    assert not result.is_error
+    mock_fn.assert_called_once()
+    assert mock_fn.call_args.kwargs["dry_run"] is True
+    data = result.data
+    assert data["needs_confirmation"] is True
+    assert data["current_model_version_id"] == "mv_5"
+    assert data["expected_current_model_version_id"] == "mv_5"
+    assert data["warnings"] == [_COLUMNS_CHANGED]
+    assert "moved since the user approved" in data["next_steps"]
+    assert "expected_current_model_version_id='mv_5'" in data["next_steps"]
+    assert "Nothing was changed" in data["next_steps"]
+
+
+@pytest.mark.asyncio
+async def test_set_model_alias_new_alias_round_trips_none_as_null(eda_mcp_server):
+    unknown = {"code": "TRAINING_COLUMNS_UNKNOWN", "message": "Training columns are not recorded."}
+    new_alias = {**_alias_result(warnings=[unknown], dry_run=True),
+                 "currentModelVersionId": None, "previousModelVersionId": None}
+    mock_fn = AsyncMock(side_effect=[new_alias, new_alias, _alias_result(warnings=[unknown])])
+    with patch("easydeploy_ai_mcp.server.api_client.set_model_alias", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            first = await client.call_tool("set_model_alias", _ALIAS_ARGS)
+            token = first.data["expected_current_model_version_id"]
+            second = await client.call_tool("set_model_alias", {
+                **_ALIAS_ARGS, "confirm": True, "expected_current_model_version_id": token,
+            })
+
+    assert first.data["needs_confirmation"] is True
+    assert first.data["current_model_version_id"] is None
+    assert token == "none"
+    assert "expected_current_model_version_id='none'" in first.data["next_steps"]
+    assert not second.is_error and "needs_confirmation" not in second.data
+    assert mock_fn.call_count == 3
+    # Passed to the API as None, which it sends as JSON null: "expect no alias".
+    assert mock_fn.call_args_list[2].kwargs["expected_model_version_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_set_model_alias_surfaces_the_apis_409_message(eda_mcp_server):
+    url = f"{BASE}/projects/proj_1/models/m_1/aliases/production"
+    checked = httpx.Response(
+        200, request=httpx.Request("PUT", url), json={"data": _alias_result(dry_run=True)},
+    )
+    conflict = _error_response(
+        409, "PUT", url,
+        json={"error": {"code": "ALIAS_MOVED", "message": "Alias production now points to mv_5."}},
+    )
+    mock_client = _capturing_client(checked)
+    mock_client.put = AsyncMock(side_effect=[checked, conflict])
+    with patch("easydeploy_ai_mcp.api_client._secure_client", return_value=mock_client):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("set_model_alias", _ALIAS_ARGS, raise_on_error=False)
+
+    assert result.is_error
+    text = result.content[0].text
+    assert "409" in text and "Alias production now points to mv_5." in text
+    assert mock_client.put.call_args_list[1].kwargs["json"] == {
+        "modelVersionId": "mv_4", "expectedModelVersionId": "mv_3",
+    }
 
 
 @pytest.mark.asyncio
@@ -2604,9 +2709,14 @@ async def test_set_model_alias_description_covers_scope_and_confirmation(eda_mcp
     desc = " ".join(tool.description.split())
     for phrase in ("INSUFFICIENT_SCOPE", "full-scope API key", "``confirm=true``",
                    "TRAINING_COLUMNS_CHANGED", "TARGET_FEATURE_CHANGED",
-                   "TRAINING_COLUMNS_UNKNOWN", "``latest`` is reserved", "409"):
+                   "TRAINING_COLUMNS_UNKNOWN", "``latest`` is reserved", "409",
+                   "``expected_current_model_version_id``"):
         assert phrase in desc, phrase
     assert tool.inputSchema["properties"]["confirm"]["default"] is False
+    expected = tool.inputSchema["properties"]["expected_current_model_version_id"]
+    assert expected["default"] == ""
+    assert "'none' for a new alias" in expected["description"]
+    assert "needs_confirmation again" in expected["description"]
     assert tool.inputSchema["required"] == ["project_id", "model_id", "alias", "model_version_id"]
 
 
@@ -2635,6 +2745,26 @@ async def test_api_client_set_model_alias_puts_and_sends_dry_run_only_when_asked
     assert args[0] == url
     assert kwargs["json"] == {"modelVersionId": "mv_4"}
     assert kwargs["params"] == ({"dryRun": "true"} if dry_run else None)
+
+
+@pytest.mark.parametrize("expected,wire", [("mv_3", b'"mv_3"'), (None, b"null")])
+@pytest.mark.asyncio
+async def test_api_client_set_model_alias_sends_expected_model_version_id(expected, wire):
+    from easydeploy_ai_mcp import api_client
+
+    url = f"{BASE}/projects/p1/models/m1/aliases/production"
+    response = httpx.Response(200, request=httpx.Request("PUT", url), json={"data": _alias_result()})
+    mock_client = _capturing_client(response)
+    with patch("easydeploy_ai_mcp.api_client._secure_client", return_value=mock_client):
+        await api_client.set_model_alias(
+            "p1", "m1", "production", "mv_4", expected_model_version_id=expected,
+            api_key=API_KEY, base_url=BASE,
+        )
+
+    sent = mock_client.put.call_args.kwargs["json"]
+    assert sent == {"modelVersionId": "mv_4", "expectedModelVersionId": expected}
+    body = httpx.Request("PUT", url, json=sent).content
+    assert b'"expectedModelVersionId":' + wire in body.replace(b" ", b"")
 
 
 @pytest.mark.asyncio
@@ -2684,6 +2814,9 @@ def test_api_error_for_insufficient_scope_says_a_full_scope_key_is_needed():
     text = str(caught.value)
     assert "INSUFFICIENT_SCOPE | This API key cannot do that." in text
     assert "predict-only scope" in text and "full-scope API key" in text
+    assert "it can read, upload scoring data and run predictions" in text
+    assert "cannot train, change models or move a model alias" in text
+    assert "Account > API Keys" in text
 
 
 def test_api_error_404_names_the_alias():

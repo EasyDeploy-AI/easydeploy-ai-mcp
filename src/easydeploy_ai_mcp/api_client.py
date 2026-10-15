@@ -180,9 +180,10 @@ def _is_generic(detail: str, reason: str) -> bool:
 #: Appended to a 403 whose API code is INSUFFICIENT_SCOPE: the key works, but its
 #: scope does not cover the route, and only the user can issue a wider key.
 _INSUFFICIENT_SCOPE_HINT = (
-    "This API key has the predict-only scope: it can read and run predictions but "
-    "cannot train, change records or move a model alias. Ask the user for a "
-    "full-scope API key (Account > API Keys in the EasyDeploy dashboard)"
+    "This API key has the predict-only scope: it can read, upload scoring data and "
+    "run predictions, but cannot train, change models or move a model alias. Ask "
+    "the user for a full-scope API key (Account > API Keys in the EasyDeploy "
+    "dashboard)"
 )
 
 
@@ -1162,6 +1163,10 @@ async def get_model_report(
 # (``^[a-z][a-z0-9-]{0,31}$``, ``latest`` reserved) and answers 400 with its own
 # message; here ``require_id`` only keeps the name to one safe path segment.
 
+#: Default for an optional argument whose ``None`` means something (JSON null),
+#: so leaving it out and passing ``None`` stay different.
+_UNSET: object = object()
+
 
 def _aliases_url(
     base_url: str, project_id: str, model_id: str, alias: str | None = None
@@ -1203,28 +1208,40 @@ async def set_model_alias(
     model_version_id: str,
     *,
     dry_run: bool = False,
+    expected_model_version_id: str | None | object = _UNSET,
     api_key: str,
     base_url: str,
     caller_channel: str = "",
 ) -> dict:
     """
-    PUT /projects/{projectId}/models/{modelId}/aliases/{alias} — body {modelVersionId}.
+    PUT /projects/{projectId}/models/{modelId}/aliases/{alias} — body
+    {modelVersionId, expectedModelVersionId?}.
 
     Creates the alias (201) or moves it (200; unchanged is a 200 no-op). With
     ``dry_run`` sends ``?dryRun=true``: the API validates and returns the same
     shape, warnings included, without writing. Returns {alias, modelId,
     modelVersionId, version, previousModelVersionId, currentModelVersionId,
     warnings: [{code, message, added?, removed?}], dryRun, updatedAt}.
+
+    ``expected_model_version_id``, when given, is sent as
+    ``expectedModelVersionId``: the version the caller expects the alias to
+    point to now, or ``None`` (JSON null) for an alias that should not exist
+    yet. The API writes only if that still holds and answers 409 otherwise, so
+    an alias moved by someone else since the caller looked is never overwritten.
+    Left out, the alias is written whatever it points to.
     Needs a full-scope API key (403 INSUFFICIENT_SCOPE otherwise).
     """
     url = _aliases_url(base_url, project_id, model_id, alias)
     params = {"dryRun": "true"} if dry_run else None
+    body: dict[str, object] = {"modelVersionId": model_version_id}
+    if expected_model_version_id is not _UNSET:
+        body["expectedModelVersionId"] = expected_model_version_id
     async with _secure_client() as client:
         resp = await client.put(
             url,
             headers=_headers(api_key, caller_channel),
             params=params,
-            json={"modelVersionId": model_version_id},
+            json=body,
             timeout=15.0,
         )
         _raise_for_status(resp, ids={"model_version_id": model_version_id})
