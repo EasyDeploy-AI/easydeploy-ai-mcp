@@ -59,7 +59,7 @@ async def test_eda_mcp_registered_tools_match_manifest(eda_mcp_server):
         tools = await client.list_tools()
     names = {t.name for t in tools}
     assert names == _eda_mod.EDA_MCP_TOOL_NAMES
-    assert len(names) == 28
+    assert len(names) == 30
 
 
 _READ_TOOLS = {
@@ -75,6 +75,7 @@ _READ_TOOLS = {
     "get_model",
     "list_models",
     "list_model_versions",
+    "list_model_aliases",
     "get_model_version",
     "get_model_report",
     "get_training_status",
@@ -84,14 +85,16 @@ _READ_TOOLS = {
 
 
 # Writes that can overwrite fields of an existing record: the create-or-update
-# tools given an id, update_dataset, and a resubmitted training job (it retrains
-# the model version in place). Every other write only adds.
+# tools given an id, update_dataset, a resubmitted training job (it retrains
+# the model version in place), and set_model_alias (it moves an existing alias).
+# Every other write only adds.
 _DESTRUCTIVE_TOOLS = {
     "create_project",
     "update_dataset",
     "create_dataset_version",
     "create_model",
     "submit_training_job",
+    "set_model_alias",
 }
 
 # The display titles hosts and the connector directory show.
@@ -116,8 +119,10 @@ _TITLES = {
     "create_model_version": "Create model version",
     "list_models": "List models",
     "list_model_versions": "List model versions",
+    "list_model_aliases": "List model aliases",
     "get_model_version": "Get model version",
     "get_model_report": "Get model report",
+    "set_model_alias": "Set model alias",
     "submit_training_job": "Start model training",
     "get_training_status": "Get training status",
     "run_prediction": "Run prediction",
@@ -172,7 +177,7 @@ async def test_eda_mcp_every_tool_has_annotations(eda_mcp_server):
 
     writes = set(by_name) - _READ_TOOLS
     idempotent_writes = {n for n in writes if by_name[n].annotations.idempotentHint}
-    assert idempotent_writes == {"update_dataset"}
+    assert idempotent_writes == {"update_dataset", "set_model_alias"}
     # Both make EasyDeploy fetch an external URL (start_upload via a host ``file``).
     open_world = {t.name for t in tools if t.annotations.openWorldHint}
     assert open_world == {"upload_from_url", "start_upload"}
@@ -798,7 +803,7 @@ def test_guide_explains_probabilities():
     assert "`classLabels` says which label `probability_1` stands for" in predict
     assert "`classLabels` in the `get_prediction` result names each number's label." in validate
     assert "without it" not in validate
-    assert _guide.GUIDE_RELEASE["guide_version"] == "1.8"
+    assert _guide.GUIDE_RELEASE["guide_version"] == "1.9"
 
 
 @pytest.mark.asyncio
@@ -2357,3 +2362,340 @@ async def test_job_starting_tools_say_each_call_is_a_new_job(eda_mcp_server):
     for name, note in notes.items():
         assert note in desc[name], name
         assert desc[name].index(note) < 120, name
+
+
+# ── Model aliases ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("tool,extra", [
+    ("run_prediction", {"input_data": {"arr": 1000}}),
+    ("run_batch_prediction", {"dataset_version_id": "dsv_1"}),
+])
+@pytest.mark.asyncio
+async def test_prediction_by_alias_sends_model_id_and_alias(eda_mcp_server, tool, extra):
+    submit_mock = AsyncMock(return_value={
+        "id": "pred_1", "status": "PENDING",
+        "modelVersionId": "mv_3", "modelId": "m_1", "alias": "production",
+        "apiKeyPrefix": "eda_live_ab",
+    })
+    with patch("easydeploy_ai_mcp.server.api_client.run_prediction", submit_mock):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool(tool, {
+                "model_id": "m_1", "alias": "production", "project_id": "proj_1",
+                "wait_for_result": False, **extra,
+            })
+
+    assert not result.is_error
+    body = submit_mock.call_args[0][0]
+    assert body["modelId"] == "m_1" and body["alias"] == "production"
+    assert "modelVersionId" not in body
+    # The pending result already says which version the alias resolved to.
+    assert result.data["modelVersionId"] == "mv_3"
+    assert result.data["alias"] == "production"
+    assert "apiKeyPrefix" not in result.data
+
+
+@pytest.mark.parametrize("tool,extra", [
+    ("run_prediction", {"input_data": {"arr": 1000}}),
+    ("run_batch_prediction", {"dataset_version_id": "dsv_1"}),
+])
+@pytest.mark.asyncio
+async def test_prediction_by_version_id_sends_only_model_version_id(eda_mcp_server, tool, extra):
+    submit_mock = AsyncMock(return_value={"id": "pred_1", "status": "PENDING"})
+    with patch("easydeploy_ai_mcp.server.api_client.run_prediction", submit_mock):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool(tool, {
+                "model_version_id": "mv_1", "wait_for_result": False, **extra,
+            })
+
+    assert not result.is_error
+    body = submit_mock.call_args[0][0]
+    assert body["modelVersionId"] == "mv_1"
+    assert "modelId" not in body and "alias" not in body
+
+
+@pytest.mark.parametrize("model_args", [
+    {},
+    {"model_version_id": "mv_1", "model_id": "m_1", "alias": "production"},
+    {"model_version_id": "mv_1", "alias": "production"},
+    {"model_id": "m_1"},
+    {"alias": "production"},
+    {"model_version_id": "  ", "model_id": "", "alias": ""},
+])
+@pytest.mark.parametrize("tool,extra", [
+    ("run_prediction", {"input_data": {"arr": 1000}}),
+    ("run_batch_prediction", {"dataset_version_id": "dsv_1"}),
+])
+@pytest.mark.asyncio
+async def test_prediction_needs_exactly_one_model_form(eda_mcp_server, tool, extra, model_args):
+    submit_mock = AsyncMock(return_value={"id": "pred_1", "status": "PENDING"})
+    with patch("easydeploy_ai_mcp.server.api_client.run_prediction", submit_mock):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool(
+                tool, {**model_args, **extra}, raise_on_error=False,
+            )
+
+    assert result.is_error
+    text = result.content[0].text
+    assert "model_version_id" in text and "model_id and alias" in text
+    submit_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prediction_result_keeps_alias_fields(eda_mcp_server, fake_clock):
+    submit_mock = AsyncMock(return_value={"id": "pred_1", "status": "PENDING"})
+    get_mock = AsyncMock(return_value={
+        "id": "pred_1", "status": "COMPLETED", "output": [1],
+        "modelVersionId": "mv_3", "modelId": "m_1", "alias": "production",
+        "apiKeyPrefix": "eda_live_ab",
+    })
+    with patch("easydeploy_ai_mcp.server.api_client.run_prediction", submit_mock), \
+         patch("easydeploy_ai_mcp.server.api_client.get_prediction", get_mock):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("run_prediction", {
+                "model_id": "m_1", "alias": "production", "input_data": {"arr": 1},
+            })
+
+    assert not result.is_error
+    assert result.data["modelVersionId"] == "mv_3"
+    assert result.data["modelId"] == "m_1"
+    assert result.data["alias"] == "production"
+    assert "apiKeyPrefix" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_prediction_tools_describe_both_model_forms(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    by_name = {t.name: t for t in tools}
+    for name in ("run_prediction", "run_batch_prediction"):
+        tool = by_name[name]
+        desc = " ".join(tool.description.split())
+        assert "Prefer the alias for recurring scoring" in desc, name
+        assert "``set_model_alias``" in desc, name
+        assert "``modelVersionId`` is the version that actually scored" in desc, name
+        schema = tool.inputSchema
+        props = schema["properties"]
+        assert props["model_version_id"]["default"] == ""
+        assert props["model_id"]["default"] == "" and props["alias"]["default"] == ""
+        assert "model_version_id" not in schema.get("required", [])
+        assert "alias" in props["model_id"]["description"]
+
+
+@pytest.mark.asyncio
+async def test_list_model_aliases_delegates_and_adds_ui_url(eda_mcp_server):
+    aliases = [
+        {
+            "alias": "production", "modelId": "m_1", "modelVersionId": "mv_3", "version": 3,
+            "previousModelVersionId": "mv_2", "createdAt": "t0", "updatedAt": "t1",
+            "updatedBy": "user-sub-1",
+        },
+        {"alias": "staging", "modelId": "m_1", "modelVersionId": "mv_4"},
+    ]
+    mock_fn = AsyncMock(return_value=aliases)
+    with patch("easydeploy_ai_mcp.server.api_client.list_model_aliases", mock_fn), \
+         patch.object(_eda_mod, "_UI_BASE_URL", "https://ui.example.com"):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool(
+                "list_model_aliases", {"project_id": "proj_1", "model_id": "m_1"},
+            )
+
+    assert not result.is_error
+    mock_fn.assert_called_once_with(
+        "proj_1", "m_1", api_key=API_KEY, base_url=BASE, caller_channel="MCP_AGENT",
+    )
+    prod, staging = result.structured_content["result"]
+    assert prod["modelVersionId"] == "mv_3" and prod["previousModelVersionId"] == "mv_2"
+    assert prod["ui_url"] == "https://ui.example.com/projects/proj_1/models/m_1?version=3"
+    assert "updatedBy" not in prod
+    assert staging["ui_url"] == "https://ui.example.com/projects/proj_1/models/m_1"
+
+
+def test_model_version_and_prediction_allowlists_carry_alias_fields():
+    assert "aliases" in _eda_mod._MODEL_VERSION_SAFE_KEYS
+    assert {"modelId", "alias"} <= _eda_mod._PREDICTION_SAFE_KEYS
+    out = _eda_mod._sanitize_model_version({"id": "mv_3", "aliases": ["production"], "fileUrl": "s3://x"})
+    assert out == {"id": "mv_3", "aliases": ["production"]}
+
+
+_ALIAS_ARGS = {
+    "project_id": "proj_1", "model_id": "m_1", "alias": "production",
+    "model_version_id": "mv_4",
+}
+_COLUMNS_CHANGED = {
+    "code": "TRAINING_COLUMNS_CHANGED",
+    "message": "Training columns differ from the current version.",
+    "added": ["tenure_days"], "removed": ["region"],
+}
+
+
+def _alias_result(*, warnings=(), dry_run=False):
+    return {
+        "alias": "production", "modelId": "m_1", "modelVersionId": "mv_4", "version": 4,
+        "previousModelVersionId": "mv_3", "currentModelVersionId": "mv_3",
+        "warnings": list(warnings), "dryRun": dry_run, "updatedAt": "t1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_model_alias_with_warnings_needs_confirmation_and_writes_nothing(eda_mcp_server):
+    mock_fn = AsyncMock(return_value=_alias_result(warnings=[_COLUMNS_CHANGED], dry_run=True))
+    with patch("easydeploy_ai_mcp.server.api_client.set_model_alias", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("set_model_alias", _ALIAS_ARGS)
+
+    assert not result.is_error
+    mock_fn.assert_called_once_with(
+        "proj_1", "m_1", "production", "mv_4", dry_run=True,
+        api_key=API_KEY, base_url=BASE, caller_channel="MCP_AGENT",
+    )
+    data = result.data
+    assert data["needs_confirmation"] is True
+    assert data["alias"] == "production"
+    assert data["model_id"] == "m_1" and data["model_version_id"] == "mv_4"
+    assert data["current_model_version_id"] == "mv_3"
+    assert data["warnings"] == [_COLUMNS_CHANGED]
+    assert "confirm=true" in data["next_steps"]
+    assert "Nothing was changed" in data["next_steps"]
+
+
+@pytest.mark.asyncio
+async def test_set_model_alias_with_confirm_dry_runs_then_writes(eda_mcp_server):
+    mock_fn = AsyncMock(side_effect=[
+        _alias_result(warnings=[_COLUMNS_CHANGED], dry_run=True),
+        _alias_result(warnings=[_COLUMNS_CHANGED]),
+    ])
+    with patch("easydeploy_ai_mcp.server.api_client.set_model_alias", mock_fn), \
+         patch.object(_eda_mod, "_UI_BASE_URL", "https://ui.example.com"):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("set_model_alias", {**_ALIAS_ARGS, "confirm": True})
+
+    assert not result.is_error
+    assert mock_fn.call_count == 2
+    assert mock_fn.call_args_list[0].kwargs["dry_run"] is True
+    assert "dry_run" not in mock_fn.call_args_list[1].kwargs
+    assert mock_fn.call_args_list[1].args == ("proj_1", "m_1", "production", "mv_4")
+    assert result.data["modelVersionId"] == "mv_4"
+    assert result.data["previousModelVersionId"] == "mv_3"
+    assert "needs_confirmation" not in result.data
+    assert result.data["ui_url"] == "https://ui.example.com/projects/proj_1/models/m_1?version=4"
+
+
+@pytest.mark.asyncio
+async def test_set_model_alias_without_warnings_writes_after_the_dry_run(eda_mcp_server):
+    mock_fn = AsyncMock(side_effect=[_alias_result(dry_run=True), _alias_result()])
+    with patch("easydeploy_ai_mcp.server.api_client.set_model_alias", mock_fn):
+        async with Client(eda_mcp_server) as client:
+            result = await client.call_tool("set_model_alias", _ALIAS_ARGS)
+
+    assert not result.is_error
+    assert mock_fn.call_count == 2
+    assert mock_fn.call_args_list[0].kwargs["dry_run"] is True
+    assert "dry_run" not in mock_fn.call_args_list[1].kwargs
+    assert result.data["dryRun"] is False
+    assert result.data["version"] == 4
+
+
+@pytest.mark.asyncio
+async def test_set_model_alias_description_covers_scope_and_confirmation(eda_mcp_server):
+    async with Client(eda_mcp_server) as client:
+        tools = await client.list_tools()
+    tool = next(t for t in tools if t.name == "set_model_alias")
+    desc = " ".join(tool.description.split())
+    for phrase in ("INSUFFICIENT_SCOPE", "full-scope API key", "``confirm=true``",
+                   "TRAINING_COLUMNS_CHANGED", "TARGET_FEATURE_CHANGED",
+                   "TRAINING_COLUMNS_UNKNOWN", "``latest`` is reserved", "409"):
+        assert phrase in desc, phrase
+    assert tool.inputSchema["properties"]["confirm"]["default"] is False
+    assert tool.inputSchema["required"] == ["project_id", "model_id", "alias", "model_version_id"]
+
+
+def _capturing_client(response: httpx.Response):
+    mock_client = _fake_client(response)
+    mock_client.put = AsyncMock(return_value=response)
+    mock_client.delete = AsyncMock(return_value=response)
+    return mock_client
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.asyncio
+async def test_api_client_set_model_alias_puts_and_sends_dry_run_only_when_asked(dry_run):
+    from easydeploy_ai_mcp import api_client
+
+    url = f"{BASE}/projects/p1/models/m1/aliases/production"
+    response = httpx.Response(200, request=httpx.Request("PUT", url), json={"data": _alias_result()})
+    mock_client = _capturing_client(response)
+    with patch("easydeploy_ai_mcp.api_client._secure_client", return_value=mock_client):
+        out = await api_client.set_model_alias(
+            "p1", "m1", "production", "mv_4", dry_run=dry_run, api_key=API_KEY, base_url=BASE,
+        )
+
+    assert out["modelVersionId"] == "mv_4"
+    args, kwargs = mock_client.put.call_args
+    assert args[0] == url
+    assert kwargs["json"] == {"modelVersionId": "mv_4"}
+    assert kwargs["params"] == ({"dryRun": "true"} if dry_run else None)
+
+
+@pytest.mark.asyncio
+async def test_api_client_list_and_delete_model_alias_paths():
+    from easydeploy_ai_mcp import api_client
+
+    list_url = f"{BASE}/projects/p1/models/m1/aliases"
+    listed = httpx.Response(200, request=httpx.Request("GET", list_url), json={"data": [], "meta": {}})
+    list_client = _capturing_client(listed)
+    with patch("easydeploy_ai_mcp.api_client._secure_client", return_value=list_client):
+        assert await api_client.list_model_aliases("p1", "m1", api_key=API_KEY, base_url=BASE) == []
+    assert list_client.get.call_args[0][0] == list_url
+
+    deleted = httpx.Response(
+        200, request=httpx.Request("DELETE", f"{list_url}/staging"),
+        json={"data": {"alias": "staging", "modelId": "m1", "modelVersionId": "mv_2"}},
+    )
+    delete_client = _capturing_client(deleted)
+    with patch("easydeploy_ai_mcp.api_client._secure_client", return_value=delete_client):
+        out = await api_client.delete_model_alias("p1", "m1", "staging", api_key=API_KEY, base_url=BASE)
+    assert out["alias"] == "staging"
+    assert delete_client.delete.call_args[0][0] == f"{list_url}/staging"
+
+
+@pytest.mark.parametrize("bad", ["../api-keys", "prod/x", "", "a b", "x?y"])
+@pytest.mark.asyncio
+async def test_api_client_alias_is_checked_before_any_request(bad):
+    from easydeploy_ai_mcp import api_client
+
+    with patch("easydeploy_ai_mcp.api_client._secure_client") as secure:
+        with pytest.raises(ValueError, match="alias must be 1-128 letters"):
+            await api_client.set_model_alias("p1", "m1", bad, "mv_1", api_key=API_KEY, base_url=BASE)
+        with pytest.raises(ValueError, match="alias must be 1-128 letters"):
+            await api_client.delete_model_alias("p1", "m1", bad, api_key=API_KEY, base_url=BASE)
+    secure.assert_not_called()
+
+
+def test_api_error_for_insufficient_scope_says_a_full_scope_key_is_needed():
+    from easydeploy_ai_mcp import api_client
+
+    response = _error_response(
+        403, "PUT", f"{BASE}/projects/p1/models/m1/aliases/production",
+        json={"error": {"code": "INSUFFICIENT_SCOPE", "message": "This API key cannot do that."}},
+    )
+    with pytest.raises(api_client.EasyDeployAPIError) as caught:
+        api_client._raise_for_status(response)
+    text = str(caught.value)
+    assert "INSUFFICIENT_SCOPE | This API key cannot do that." in text
+    assert "predict-only scope" in text and "full-scope API key" in text
+
+
+def test_api_error_404_names_the_alias():
+    from easydeploy_ai_mcp import api_client
+
+    response = _error_response(404, "DELETE", f"{BASE}/projects/p1/models/m1/aliases/staging")
+    with pytest.raises(api_client.EasyDeployAPIError) as caught:
+        api_client._raise_for_status(response)
+    assert "alias 'staging'" in str(caught.value)
+
+
+def test_api_client_has_no_deploy_endpoint():
+    from easydeploy_ai_mcp import api_client
+
+    assert not hasattr(api_client, "deploy_endpoint")

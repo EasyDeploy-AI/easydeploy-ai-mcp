@@ -62,7 +62,7 @@ The domain allowlist UI is available on **paid** Claude plans.
 
 ## Start here: the `get_started` playbook
 
-The EasyDeploy connector has 28 tools. The one to start a modeling task with is `get_started`: it returns the EasyDeploy data-science playbook, step by step, from framing the problem to using the model's predictions, and Claude can ask it for a single step (`prepare`, `split`, `upload`, `train`, `validate`, `predict`). If Claude starts working without it, ask it to read the EasyDeploy playbook first. The playbook is updated on EasyDeploy's side, so Claude always reads the current version; you do not need to reconnect the connector to pick up changes.
+The EasyDeploy connector has 30 tools. The one to start a modeling task with is `get_started`: it returns the EasyDeploy data-science playbook, step by step, from framing the problem to using the model's predictions, and Claude can ask it for a single step (`prepare`, `split`, `upload`, `train`, `validate`, `predict`). If Claude starts working without it, ask it to read the EasyDeploy playbook first. The playbook is updated on EasyDeploy's side, so Claude always reads the current version; you do not need to reconnect the connector to pick up changes.
 
 ## You are the data scientist
 

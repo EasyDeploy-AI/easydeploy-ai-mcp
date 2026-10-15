@@ -38,7 +38,7 @@ through the model or through tool arguments on any of them:
   Then ask for the dataset name or URL and resolve it with list_datasets. That
   upload is already a dataset — do not call complete_upload for it.
 
-Tool catalog (28 tools; each has a title and MCP annotations — readOnlyHint for
+Tool catalog (30 tools; each has a title and MCP annotations — readOnlyHint for
 reads; on writes, destructiveHint=True when one can overwrite an existing record):
   Start here: get_started (the data-science playbook; content ships in guide/*.md)
   Account: get_account_status
@@ -48,10 +48,12 @@ reads; on writes, destructiveHint=True when one can overwrite an existing record
   Dataset versions: list_dataset_versions (project_id optional), get_dataset_version,
     create_dataset_version (pass version_id to update qa_status)
   Models: create_model (pass model_id to update), get_model, create_model_version,
-    list_models, list_model_versions, get_model_version,
-    get_model_report (project_id optional — inferred from model_id)
+    list_models, list_model_versions, list_model_aliases, get_model_version,
+    get_model_report (project_id optional — inferred from model_id),
+    set_model_alias (dry-runs first; confirm=true after the user reviews column changes)
   Training: submit_training_job, get_training_status
-  Predictions: run_prediction, run_batch_prediction (project_id + target_feature auto-resolved),
+  Predictions: run_prediction, run_batch_prediction (model_version_id, or model_id + alias;
+    project_id + target_feature auto-resolved),
     get_prediction (includes batch download URL when ready), list_predictions
 """
 
@@ -236,9 +238,11 @@ def _dataset_ui_url(project_id: str, dataset_id: str) -> str:
 
 # probabilities (ad-hoc) and classLabels (ad-hoc and batch) come with a completed
 # classifier prediction: per-row probability_<class> values, and the label each
-# <class> stands for. Older predictions and regressors have neither.
+# <class> stands for. Older predictions and regressors have neither. modelId and
+# alias are set when the prediction named its model by alias; modelVersionId is
+# always the version that scored.
 _PREDICTION_SAFE_KEYS = frozenset({
-    "id", "status", "type", "projectId", "modelVersionId",
+    "id", "status", "type", "projectId", "modelVersionId", "modelId", "alias",
     "createdAt", "startTime", "endTime", "inferenceLatency",
     "output", "error", "probabilities", "classLabels",
 })
@@ -262,6 +266,7 @@ _MODEL_VERSION_SAFE_KEYS = frozenset({
     "datasetVersionId", "trainingJobId", "trainingTime",
     "edaReportStatus", "edaReportReadyAt", "edaReportError",
     "edaReportSummary", "edaReportPerformanceSummary",
+    "aliases",
     "createdAt", "updatedAt",
 })
 
@@ -272,6 +277,19 @@ def _sanitize_model_version(raw: dict[str, Any]) -> dict[str, Any]:
     Strips S3 paths (fileUrl, s3OutputPath) and internal auth fields.
     """
     return {k: v for k, v in raw.items() if k in _MODEL_VERSION_SAFE_KEYS}
+
+
+# updatedBy (the account that last moved the alias) stays out, like owner fields.
+_MODEL_ALIAS_SAFE_KEYS = frozenset({
+    "alias", "modelId", "modelVersionId", "version", "previousModelVersionId",
+    "createdAt", "updatedAt",
+})
+
+
+def _version_ui_url(project_id: str, model_id: str, version: Any) -> str:
+    """The model page, opened on ``version`` when the API gave its number."""
+    base = _model_ui_url(project_id, model_id)
+    return f"{base}?version={version}" if version is not None else base
 
 
 def _normalize_column_names(value: Any) -> Any:
@@ -312,7 +330,9 @@ def _normalize_column_names(value: Any) -> Any:
 # write states destructiveHint: True when it can overwrite fields of an existing
 # record (an update, or a create-or-update given an id, or retraining a model
 # version in place), False when it only adds (a new record, upload session or
-# prediction). No tool deletes anything. upload_from_url and start_upload (with
+# prediction). set_model_alias is destructive (moving an alias overwrites what it
+# points to) and idempotent (the same call again changes nothing). No tool deletes
+# anything. upload_from_url and start_upload (with
 # a host ``file``) make EasyDeploy fetch an external URL, so they are
 # openWorldHint=True.
 #
@@ -1071,7 +1091,10 @@ async def create_model(
 
 @_tool(_read_only("Get model"))
 async def get_model(project_id: str, model_id: str) -> dict[str, Any]:
-    """Fetch a single model by id (name, description, version count)."""
+    """
+    Fetch a single model by id (name, description, version count, and
+    ``aliases``: each alias with the ``modelVersionId`` it points to).
+    """
     data = await api_client.get_model(project_id, model_id, **_kw())
     mid = str(data.get("id", "")).strip() or model_id.strip()
     if mid:
@@ -1139,10 +1162,28 @@ async def list_model_versions(project_id: str, model_id: str) -> list[dict[str, 
     """
     raw = await api_client.list_model_versions(project_id, model_id, **_kw())
     out = [_sanitize_model_version(v) for v in raw]
-    base = _model_ui_url(project_id, model_id)
     for item, source in zip(out, raw):
-        version = source.get("version")
-        item["ui_url"] = f"{base}?version={version}" if version is not None else base
+        item["ui_url"] = _version_ui_url(project_id, model_id, source.get("version"))
+    return out
+
+
+@_tool(_read_only("List model aliases"))
+async def list_model_aliases(project_id: str, model_id: str) -> list[dict[str, Any]]:
+    """
+    List a model's aliases: named pointers such as ``staging`` or ``production``,
+    each resolving to exactly one version of the model. Each entry has
+    ``alias``, ``modelVersionId`` and its ``version`` number, the version it
+    pointed to before (``previousModelVersionId``, null for a new alias),
+    ``createdAt``, ``updatedAt`` and a ``ui_url``.
+
+    ``run_prediction`` and ``run_batch_prediction`` take ``model_id`` + ``alias``
+    to score with whichever version the alias points to; ``set_model_alias``
+    moves one. ``list_model_versions`` also lists each version's ``aliases``.
+    """
+    raw = await api_client.list_model_aliases(project_id, model_id, **_kw())
+    out = [{k: v for k, v in item.items() if k in _MODEL_ALIAS_SAFE_KEYS} for item in raw]
+    for item in out:
+        item["ui_url"] = _version_ui_url(project_id, model_id, item.get("version"))
     return out
 
 
@@ -1153,14 +1194,13 @@ async def get_model_version(
     version_id: str,
 ) -> dict[str, Any]:
     """
-    Fetch a single model version by id (status, edaReportStatus, target, timestamps).
+    Fetch a single model version by id (status, edaReportStatus, target,
+    ``aliases`` pointing to it, timestamps).
     Prefer this over list_model_versions when you already know the version_id.
     """
     raw = await api_client.get_model_version(project_id, model_id, version_id, **_kw())
     out = _sanitize_model_version(raw)
-    version = raw.get("version")
-    base = _model_ui_url(project_id, model_id)
-    out["ui_url"] = f"{base}?version={version}" if version is not None else base
+    out["ui_url"] = _version_ui_url(project_id, model_id, raw.get("version"))
     return out
 
 
@@ -1297,6 +1337,79 @@ async def get_model_report(
     )
     if isinstance(data, dict):
         data["ui_url"] = _model_ui_url(pid, model_id)
+    return data
+
+
+def _alias_confirmation_next_steps(alias: str, model_version_id: str) -> str:
+    return (
+        f"Nothing was changed. Moving alias '{alias}' to model version "
+        f"'{model_version_id}' changes what every caller using it is scored with. "
+        "Show the user each warning (columns added or removed, a changed target) and "
+        "the version the alias points to now (current_model_version_id). Call "
+        "set_model_alias again with the same arguments and confirm=true only if the "
+        "user agrees."
+    )
+
+
+@_tool(_write("Set model alias", destructive=True, idempotent=True))
+async def set_model_alias(
+    project_id: str,
+    model_id: str,
+    alias: str,
+    model_version_id: str,
+    confirm: Annotated[bool, Field(description=(
+        "Write the alias even though the check found warnings. Set it only after "
+        "the user has seen the warnings and agreed."
+    ))] = False,
+) -> dict[str, Any]:
+    """
+    Point a model alias, such as ``staging`` or ``production``, at one of the
+    model's versions: creates the alias, or moves it. Callers that predict with
+    ``model_id`` + ``alias`` score with the new version from then on, without
+    changing their calls. Pointing an alias at the version it already has
+    changes nothing.
+
+    Promote a version only after it passed holdout validation (playbook section
+    ``validate``) and the user agreed. ``alias`` starts with a lowercase letter,
+    then lowercase letters, digits or ``-``, 32 characters at most; ``latest``
+    is reserved. The version must belong to ``model_id`` and have finished
+    training (TRAINING_COMPLETED).
+
+    Every call first checks the change without writing. When the version was
+    trained on different columns or a different target than the one the alias
+    points to now, callers sending the old columns may fail or get a different
+    kind of answer, so the tool writes nothing and returns
+    ``needs_confirmation: true`` with ``warnings`` (``TRAINING_COLUMNS_CHANGED``
+    with the ``added`` and ``removed`` columns, ``TARGET_FEATURE_CHANGED``,
+    ``TRAINING_COLUMNS_UNKNOWN``), ``current_model_version_id`` and
+    ``next_steps``. Show the user those changes and call again with
+    ``confirm=true`` only if they agree. Otherwise the alias is written and the
+    result has ``modelVersionId``, ``version``, ``previousModelVersionId``,
+    ``warnings`` and ``ui_url``.
+
+    Needs a full-scope API key: a predict-only key gets 403 INSUFFICIENT_SCOPE,
+    and only the user can supply a full-scope key. A 409 means the alias moved
+    at the same moment; check it with ``list_model_aliases`` before retrying.
+    """
+    check = await api_client.set_model_alias(
+        project_id, model_id, alias, model_version_id, dry_run=True, **_kw()
+    )
+    warnings = (check.get("warnings") if isinstance(check, dict) else None) or []
+    if warnings and not confirm:
+        return {
+            "needs_confirmation": True,
+            "alias": check.get("alias", alias),
+            "model_id": model_id,
+            "model_version_id": model_version_id,
+            "current_model_version_id": check.get("currentModelVersionId"),
+            "warnings": warnings,
+            "next_steps": _alias_confirmation_next_steps(alias, model_version_id),
+        }
+    data = await api_client.set_model_alias(
+        project_id, model_id, alias, model_version_id, **_kw()
+    )
+    if isinstance(data, dict):
+        data["ui_url"] = _version_ui_url(project_id, model_id, data.get("version"))
     return data
 
 
@@ -1444,11 +1557,50 @@ async def get_training_status(
 
 # ── Predictions ────────────────────────────────────────────────────────────────
 
+_MODEL_VERSION_ID_FIELD = Field(description=(
+    "The exact model version to score with. Leave empty when naming the model by "
+    "model_id + alias instead."
+))
+_MODEL_ID_FIELD = Field(description=(
+    "With alias: the model whose alias picks the version. Leave empty when "
+    "passing model_version_id."
+))
+_ALIAS_FIELD = Field(description=(
+    "With model_id: score with the version this alias (such as 'production') "
+    "points to when the call runs. Leave empty when passing model_version_id."
+))
+
+
+def _prediction_model_fields(
+    model_version_id: str, model_id: str, alias: str
+) -> dict[str, str]:
+    """The request fields that name the model, or ValueError before any request."""
+    mvid, mid, name = model_version_id.strip(), model_id.strip(), alias.strip()
+    if mvid and not mid and not name:
+        return {"modelVersionId": mvid}
+    if mid and name and not mvid:
+        return {"modelId": mid, "alias": name}
+    given = [n for n, v in (
+        ("model_version_id", mvid), ("model_id", mid), ("alias", name)) if v]
+    raise ValueError(
+        "Name the model one way: model_version_id (an exact version), or model_id "
+        "and alias together (the version the alias points to, such as "
+        f"alias='production'), not both. Got: {', '.join(given) or 'none of them'}."
+    )
+
+
+def _submitted_model(data: dict[str, Any]) -> dict[str, Any]:
+    """The version a just-submitted prediction resolved to, as the API echoed it."""
+    return {k: data[k] for k in ("modelVersionId", "modelId", "alias") if data.get(k)}
+
 
 @_tool(_write("Run prediction", destructive=False, idempotent=False))
 async def run_prediction(
-    model_version_id: str,
+    *,
+    model_version_id: Annotated[str, _MODEL_VERSION_ID_FIELD] = "",
     input_data: dict[str, Any],
+    model_id: Annotated[str, _MODEL_ID_FIELD] = "",
+    alias: Annotated[str, _ALIAS_FIELD] = "",
     project_id: str = "",
     target_feature: str = "",
     wait_for_result: bool = True,
@@ -1469,6 +1621,14 @@ async def run_prediction(
     Each call is a new prediction and spends a prediction credit; ``get_prediction``
     follows one still running, by its ``prediction_id``.
 
+    Name the model one way: ``model_version_id`` for an exact version, or
+    ``model_id`` + ``alias`` (such as ``production``) for whichever version the
+    alias points to. Prefer the alias for recurring scoring, so the user can
+    promote a new version with ``set_model_alias`` without changing the calls.
+    The result's ``modelVersionId`` is the version that actually scored, and
+    ``alias`` echoes the alias that resolved it; report that version next to
+    the output.
+
     ``project_id`` and ``target_feature`` are auto-resolved from the model version
     record when omitted. By default waits and returns the predicted label or value
     in ``output``. For a classifier the result also has ``probabilities``, one
@@ -1483,7 +1643,10 @@ async def run_prediction(
     running then, the result has ``timed_out: true`` and ``next_steps``: poll
     ``get_prediction`` to keep waiting.
     """
-    body: dict[str, Any] = {"modelVersionId": model_version_id, "input": input_data}
+    body: dict[str, Any] = {
+        **_prediction_model_fields(model_version_id, model_id, alias),
+        "input": input_data,
+    }
     if project_id.strip():
         body["projectId"] = project_id.strip()
     if target_feature.strip():
@@ -1501,6 +1664,7 @@ async def run_prediction(
         result: dict[str, Any] = {
             "prediction_id": prediction_id,
             "status": str(data.get("status", "PENDING")),
+            **_submitted_model(data),
         }
         if resolved_project:
             result["ui_url"] = _predictions_ui_url(resolved_project)
@@ -1524,6 +1688,7 @@ async def run_prediction(
             result = {
                 "prediction_id": prediction_id,
                 "status": status or "PENDING",
+                **_submitted_model(data),
                 "timed_out": True,
                 "next_steps": _prediction_wait_next_steps(prediction_id, "run_prediction"),
             }
@@ -1535,8 +1700,11 @@ async def run_prediction(
 
 @_tool(_write("Run batch prediction", destructive=False, idempotent=False))
 async def run_batch_prediction(
-    model_version_id: str,
+    *,
+    model_version_id: Annotated[str, _MODEL_VERSION_ID_FIELD] = "",
     dataset_version_id: str,
+    model_id: Annotated[str, _MODEL_ID_FIELD] = "",
+    alias: Annotated[str, _ALIAS_FIELD] = "",
     project_id: str = "",
     target_feature: str = "",
     wait_for_result: bool = False,
@@ -1556,6 +1724,14 @@ async def run_batch_prediction(
 
     Each call starts a new batch job and spends one prediction credit per row;
     ``get_prediction`` follows one already started, by its ``prediction_id``.
+
+    Name the model one way: ``model_version_id`` for an exact version, or
+    ``model_id`` + ``alias`` (such as ``production``) for whichever version the
+    alias points to. Prefer the alias for recurring scoring, so the user can
+    promote a new version with ``set_model_alias`` without changing the calls;
+    validate a candidate by its ``model_version_id``. The result's
+    ``modelVersionId`` is the version that actually scored, and ``alias`` echoes
+    the alias that resolved it; report that version next to the output.
 
     ``project_id`` and ``target_feature`` are auto-resolved from the model version
     record when omitted. ``dataset_version_id`` identifies both the input file and
@@ -1587,7 +1763,7 @@ async def run_batch_prediction(
     ``get_prediction`` to keep waiting.
     """
     body: dict[str, Any] = {
-        "modelVersionId": model_version_id,
+        **_prediction_model_fields(model_version_id, model_id, alias),
         "datasetVersionId": dataset_version_id,
     }
     if project_id.strip():
@@ -1608,6 +1784,7 @@ async def run_batch_prediction(
         result: dict[str, Any] = {
             "prediction_id": prediction_id,
             "status": str(data.get("status", "PENDING")),
+            **_submitted_model(data),
         }
         if resolved_project:
             result["ui_url"] = _predictions_ui_url(resolved_project)
@@ -1631,6 +1808,7 @@ async def run_batch_prediction(
             result = {
                 "prediction_id": prediction_id,
                 "status": status or "PENDING",
+                **_submitted_model(data),
                 "timed_out": True,
                 "next_steps": _prediction_wait_next_steps(prediction_id, "run_batch_prediction"),
             }
@@ -1722,8 +1900,10 @@ EDA_MCP_TOOL_NAMES: frozenset[str] = frozenset(
         "create_model_version",
         "list_models",
         "list_model_versions",
+        "list_model_aliases",
         "get_model_version",
         "get_model_report",
+        "set_model_alias",
         "submit_training_job",
         "get_training_status",
         "run_prediction",

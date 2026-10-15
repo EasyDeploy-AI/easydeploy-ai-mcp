@@ -17,7 +17,7 @@ from functools import lru_cache
 from importlib import resources
 
 # The one edit a content update needs: bump both values together.
-GUIDE_RELEASE: dict[str, str] = {"guide_version": "1.8", "updated": "2026-10-14"}
+GUIDE_RELEASE: dict[str, str] = {"guide_version": "1.9", "updated": "2026-10-14"}
 
 # Reading order, with the one-line summary get_started lists for each section.
 SECTIONS: tuple[tuple[str, str], ...] = (
