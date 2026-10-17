@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-15
+
 ### Added
 
 - **Model aliases** (playbook 1.9). An alias, such as `staging` or `production`, is a named pointer on a model that resolves to exactly one of its versions. Two new tools, 30 in all:
@@ -28,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - `api_client.deploy_endpoint()`: nothing called it and no tool exposed it; models score directly, with no deployment step.
+
+### Fixed
+
+- The error `set_model_alias` raises for `confirm=true` without `expected_current_model_version_id` told the agent to call `set_model_alias` without `confirm` "to get it", as if that call only looked. When the move changes nothing for callers, that call writes the alias. The error now says so: without `confirm` it returns `needs_confirmation` with `expected_current_model_version_id` when the columns or target change, and otherwise performs the move directly with no confirm step. The tool's description is unchanged.
 
 ### Compatibility
 
@@ -190,7 +196,9 @@ all. stdio users are unaffected beyond the `caller_channel` fix.
 - Optional `MCP_SERVICE_TOKEN` for gating the HTTP MCP surface; HTTPS-only calls to the EasyDeploy API.
 - `Dockerfile` for self-hosted deployments.
 
-[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.3...v0.5.0
+[0.4.3]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.3.0...v0.4.0

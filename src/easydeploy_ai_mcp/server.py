@@ -1443,7 +1443,11 @@ async def set_model_alias(
             "confirm=true needs expected_current_model_version_id: the "
             "expected_current_model_version_id (or current_model_version_id, 'none' "
             "when null) from the needs_confirmation result the user approved. Call "
-            "set_model_alias without confirm to get it. Nothing was changed."
+            "set_model_alias without confirm first: when the move changes the columns "
+            "or target callers see, it returns needs_confirmation with "
+            "expected_current_model_version_id to pass back here; when nothing changes "
+            "for callers it performs the move directly and no confirm step is needed. "
+            "Nothing was changed."
         )
     check = await api_client.set_model_alias(
         project_id, model_id, alias, model_version_id, dry_run=True, **_kw()

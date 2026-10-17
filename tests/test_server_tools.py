@@ -2622,7 +2622,10 @@ async def test_set_model_alias_confirm_without_expected_id_raises_and_writes_not
     assert result.is_error
     text = result.content[0].text
     assert "expected_current_model_version_id" in text
-    assert "without confirm" in text
+    assert "without confirm first" in text
+    # The no-confirm call is not a harmless lookup: without warnings it moves the alias.
+    assert "performs the move directly" in text
+    assert "Call set_model_alias without confirm to get it" not in text
     mock_fn.assert_not_called()
 
 
