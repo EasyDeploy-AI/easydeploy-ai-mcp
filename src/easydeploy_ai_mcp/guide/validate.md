@@ -42,7 +42,7 @@ Tell the user, in plain language:
 - Whether it beats the baseline and their current way of deciding.
 - The threshold you recommend, and why.
 - The limits: size of the test file, the period it covers, segments where it is weak.
-- Your recommendation: go, no-go, or go with conditions.
+- Your recommendation: go, no-go, or go with conditions. On a go, offer to promote the version with `set_model_alias` (section `predict`).
 
 ## When the model is weak
 

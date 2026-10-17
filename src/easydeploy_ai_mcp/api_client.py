@@ -107,10 +107,11 @@ _PATH_ID_NAMES = {
     "training-jobs": "job_id",
     "predictions": "prediction_id",
     "uploads": "upload_request_id",
+    "aliases": "alias",
 }
 #: Path segments after a collection that name an action, not an id.
 _PATH_ACTIONS = frozenset(
-    {"url", "from-url", "data", "complete-upload", "download", "report", "endpoints"}
+    {"url", "from-url", "data", "complete-upload", "download", "report"}
 )
 
 
@@ -176,6 +177,16 @@ def _is_generic(detail: str, reason: str) -> bool:
     return not text or text in _GENERIC_DETAILS or text == reason.strip().lower()
 
 
+#: Appended to a 403 whose API code is INSUFFICIENT_SCOPE: the key works, but its
+#: scope does not cover the route, and only the user can issue a wider key.
+_INSUFFICIENT_SCOPE_HINT = (
+    "This API key has the predict-only scope: it can read, upload scoring data and "
+    "run predictions, but cannot train, change models or move a model alias. Ask "
+    "the user for a full-scope API key (Account > API Keys in the EasyDeploy "
+    "dashboard)"
+)
+
+
 def _raise_for_status(
     response: httpx.Response, *, ids: dict[str, object] | None = None
 ) -> None:
@@ -200,6 +211,8 @@ def _raise_for_status(
     elif status == 401:
         # Only the user can fix sign-in, whatever the API calls the failure.
         detail = f"{detail}. {explanation}"
+    elif status == 403 and "INSUFFICIENT_SCOPE" in detail:
+        detail = f"{detail}. {_INSUFFICIENT_SCOPE_HINT}."
     message = (
         f"EasyDeploy API returned {status} {response.reason_phrase} for "
         f"{request.method} {path}: {detail}"
@@ -813,7 +826,10 @@ async def run_prediction(
 ) -> dict:
     """
     POST /predictions
-    body keys: projectId, modelVersionId, targetFeature, input
+    body keys: projectId?, targetFeature?, input (ad-hoc) or datasetVersionId (batch),
+    and the model as either modelVersionId or modelId + alias (never both; the
+    API answers 400 naming both forms). The response echoes modelVersionId (the
+    version that scored), plus modelId and alias when an alias resolved it.
     Returns the response data dict.
     """
     async with _secure_client() as client:
@@ -825,6 +841,8 @@ async def run_prediction(
         )
         _raise_for_status(resp, ids={
             "model_version_id": body.get("modelVersionId"),
+            "model_id": body.get("modelId"),
+            "alias": body.get("alias"),
             "dataset_version_id": body.get("datasetVersionId"),
             "project_id": body.get("projectId"),
         })
@@ -1138,25 +1156,117 @@ async def get_model_report(
         return data if data is not None else {}
 
 
-async def deploy_endpoint(
+# ── Model aliases ──────────────────────────────────────────────────────────────
+#
+# An alias (``staging``, ``production``, ...) is a named pointer on a model that
+# resolves to exactly one of its versions. The API checks the name
+# (``^[a-z][a-z0-9-]{0,31}$``, ``latest`` reserved) and answers 400 with its own
+# message; here ``require_id`` only keeps the name to one safe path segment.
+
+#: Default for an optional argument whose ``None`` means something (JSON null),
+#: so leaving it out and passing ``None`` stay different.
+_UNSET: object = object()
+
+
+def _aliases_url(
+    base_url: str, project_id: str, model_id: str, alias: str | None = None
+) -> str:
+    url = (
+        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
+        f"/models/{require_id(model_id, 'model_id')}/aliases"
+    )
+    return url if alias is None else f"{url}/{require_id(alias, 'alias')}"
+
+
+async def list_model_aliases(
     project_id: str,
     model_id: str,
     *,
     api_key: str,
     base_url: str,
     caller_channel: str = "",
-) -> dict:
-    """POST /projects/{projectId}/models/{modelId}/endpoints"""
-    url = (
-        f"{base_url}/projects/{require_id(project_id, 'project_id')}"
-        f"/models/{require_id(model_id, 'model_id')}/endpoints"
-    )
+) -> list:
+    """
+    GET /projects/{projectId}/models/{modelId}/aliases
+    Returns [{alias, modelId, modelVersionId, version, previousModelVersionId,
+    createdAt, updatedAt, updatedBy}].
+    """
     async with _secure_client() as client:
-        resp = await client.post(
+        resp = await client.get(
+            _aliases_url(base_url, project_id, model_id),
+            headers=_headers(api_key, caller_channel),
+            timeout=15.0,
+        )
+        _raise_for_status(resp)
+        return resp.json()["data"]
+
+
+async def set_model_alias(
+    project_id: str,
+    model_id: str,
+    alias: str,
+    model_version_id: str,
+    *,
+    dry_run: bool = False,
+    expected_model_version_id: str | None | object = _UNSET,
+    api_key: str,
+    base_url: str,
+    caller_channel: str = "",
+) -> dict:
+    """
+    PUT /projects/{projectId}/models/{modelId}/aliases/{alias} — body
+    {modelVersionId, expectedModelVersionId?}.
+
+    Creates the alias (201) or moves it (200; unchanged is a 200 no-op). With
+    ``dry_run`` sends ``?dryRun=true``: the API validates and returns the same
+    shape, warnings included, without writing. Returns {alias, modelId,
+    modelVersionId, version, previousModelVersionId, currentModelVersionId,
+    warnings: [{code, message, added?, removed?}], dryRun, updatedAt}.
+
+    ``expected_model_version_id``, when given, is sent as
+    ``expectedModelVersionId``: the version the caller expects the alias to
+    point to now, or ``None`` (JSON null) for an alias that should not exist
+    yet. The API writes only if that still holds and answers 409 otherwise, so
+    an alias moved by someone else since the caller looked is never overwritten.
+    Left out, the alias is written whatever it points to.
+    Needs a full-scope API key (403 INSUFFICIENT_SCOPE otherwise).
+    """
+    url = _aliases_url(base_url, project_id, model_id, alias)
+    params = {"dryRun": "true"} if dry_run else None
+    body: dict[str, object] = {"modelVersionId": model_version_id}
+    if expected_model_version_id is not _UNSET:
+        body["expectedModelVersionId"] = expected_model_version_id
+    async with _secure_client() as client:
+        resp = await client.put(
             url,
             headers=_headers(api_key, caller_channel),
-            json={},
-            timeout=30.0,
+            params=params,
+            json=body,
+            timeout=15.0,
+        )
+        _raise_for_status(resp, ids={"model_version_id": model_version_id})
+        return resp.json()["data"]
+
+
+async def delete_model_alias(
+    project_id: str,
+    model_id: str,
+    alias: str,
+    *,
+    api_key: str,
+    base_url: str,
+    caller_channel: str = "",
+) -> dict:
+    """
+    DELETE /projects/{projectId}/models/{modelId}/aliases/{alias}
+    Returns {alias, modelId, modelVersionId}. Client only: no MCP tool deletes.
+    """
+    url = _aliases_url(base_url, project_id, model_id, alias)
+    async with _secure_client() as client:
+        resp = await client.delete(
+            url,
+            headers=_headers(api_key, caller_channel),
+            timeout=15.0,
         )
         _raise_for_status(resp)
         return resp.json()["data"]

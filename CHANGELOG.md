@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-15
+
+### Added
+
+- **Model aliases** (playbook 1.9). An alias, such as `staging` or `production`, is a named pointer on a model that resolves to exactly one of its versions. Two new tools, 30 in all:
+  - `list_model_aliases(project_id, model_id)` (read-only) lists each alias with the `modelVersionId` and `version` it points to, the version it pointed to before (`previousModelVersionId`), timestamps and a `ui_url`.
+  - `set_model_alias(project_id, model_id, alias, model_version_id, confirm=false)` creates or moves an alias. It always dry-runs first (`PUT .../aliases/{alias}?dryRun=true`). When the API warns that the version was trained on different columns or a different target than the version the alias points to now (`TRAINING_COLUMNS_CHANGED` with `added` and `removed`, `TARGET_FEATURE_CHANGED`, `TRAINING_COLUMNS_UNKNOWN`), it writes nothing and returns `needs_confirmation: true` with the warnings, `current_model_version_id` and `next_steps`; called again with `confirm=true`, or when there are no warnings, it writes the alias. Annotated `destructiveHint: true` (it can move an existing alias) and `idempotentHint: true` (the same call again changes nothing).
+- **Predict by alias.** `run_prediction` and `run_batch_prediction` take `model_id` + `alias` as an alternative to `model_version_id` and send `{modelId, alias}` instead of `modelVersionId`, so recurring scoring picks up a promoted version without changing the calls. Their results keep `modelId` and `alias` next to `modelVersionId`, which is always the version that actually scored; a result returned before the prediction finishes now carries them too. `list_model_versions` and `get_model_version` pass through each version's `aliases`, and `get_model` returns the model's `aliases`.
+- **API key scopes.** EasyDeploy API keys are now `full` or `predict`. Only a full-scope key can move an alias; a `403 INSUFFICIENT_SCOPE` error now adds that the key is predict-only and that the user must supply a full-scope key. A 404 on an alias path names the `alias`.
+- The playbook's `predict` section has an "Aliases" part: score by alias for recurring scoring, promote (staging, then production) only after validation passes and the user agrees, state the resolved `modelVersionId` next to every output, and a predict-only key cannot promote. `validate` offers promotion on a go, and the `overview` workflow names `set_model_alias`.
+- `set_model_alias` takes `expected_current_model_version_id`: the `current_model_version_id` from the `needs_confirmation` result (which now also returns it as `expected_current_model_version_id`), or `none` for a new alias. `confirm=true` now requires it and writes only if the alias still points where the user looked; if the alias moved since the user approved, nothing is written and `needs_confirmation` comes back with the new state. Every write, confirmed or not, sends the version the dry run saw as `expectedModelVersionId`, so the API answers 409 instead of overwriting an alias someone else moved between the check and the write. This protects against promoting over a version the user never reviewed.
+- `api_client.set_model_alias(..., expected_model_version_id=...)` sends `expectedModelVersionId` (`None` becomes JSON null: the alias must not exist yet); left out, nothing is sent.
+- `api_client.list_model_aliases`, `api_client.set_model_alias(..., dry_run=False)` and `api_client.delete_model_alias` (client only; no tool deletes anything). The alias is checked with `require_id` before it goes into a path; the API checks the name itself (`^[a-z][a-z0-9-]{0,31}$`, `latest` reserved) and its 400 message is passed on.
+
+### Changed
+
+- `run_prediction` and `run_batch_prediction` (the tool functions in `easydeploy_ai_mcp.server`) take keyword-only parameters. Python code that calls them positionally must switch to keywords; MCP hosts, which always send named arguments, are unaffected.
+- The `403 INSUFFICIENT_SCOPE` hint now says a predict-only key can read, upload scoring data and run predictions, but cannot train, change models or move a model alias.
+- `model_version_id` is now optional on `run_prediction` and `run_batch_prediction`. Exactly one of `model_version_id` or `model_id` + `alias` is required; both or neither raises an error naming both forms before any request is made, so nothing is spent.
+
+### Removed
+
+- `api_client.deploy_endpoint()`: nothing called it and no tool exposed it; models score directly, with no deployment step.
+
+### Fixed
+
+- The error `set_model_alias` raises for `confirm=true` without `expected_current_model_version_id` told the agent to call `set_model_alias` without `confirm` "to get it", as if that call only looked. When the move changes nothing for callers, that call writes the alias. The error now says so: without `confirm` it returns `needs_confirmation` with `expected_current_model_version_id` when the columns or target change, and otherwise performs the move directly with no confirm step. The tool's description is unchanged.
+
+### Compatibility
+
+- The alias arguments and tools need an EasyDeploy API that has the alias routes (`/v1/projects/{p}/models/{m}/aliases` and `{modelId, alias}` on `POST /v1/predictions`). A self-hosted `EDA_API_BASE` pointing at an older backend answers with the API's own 400 or 404 text. Predicting by `model_version_id` works as before.
+
 ## [0.4.3] - 2026-10-14
 
 ### Fixed
@@ -164,7 +196,9 @@ all. stdio users are unaffected beyond the `caller_channel` fix.
 - Optional `MCP_SERVICE_TOKEN` for gating the HTTP MCP surface; HTTPS-only calls to the EasyDeploy API.
 - `Dockerfile` for self-hosted deployments.
 
-[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.3...v0.5.0
+[0.4.3]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/easydeploy-ai/easydeploy-ai-mcp/compare/v0.3.0...v0.4.0
