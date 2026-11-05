@@ -4,6 +4,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that ex
 
 **PyPI package name:** `easydeploy-ai-mcp` · **Import package:** `easydeploy_ai_mcp`
 
+<!-- mcp-name: ai.easydeploy/easydeploy-ai-mcp -->
+
 ## Contents
 
 - [Connect with Claude](#connect-with-claude)

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **MCP Registry listing.** `server.json` describes the server for the [official MCP Registry](https://registry.modelcontextprotocol.io) as `ai.easydeploy/easydeploy-ai-mcp`. Version 0.5.0 is listed there with the hosted endpoint only. The README now carries the `mcp-name` marker the registry uses to verify PyPI ownership, so the first release that includes it can also list the PyPI package. `RELEASING.md` covers publishing to the registry.
+
 ## [0.5.0] - 2026-10-15
 
 ### Added
